@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: ai-processing-api
+    ports:
+      - "8001:8001"
+      - "8505:8505"
+    environment:
+      - SKIP_OPENSEARCH=true
+      - SKIP_REDIS=true
+      - USE_OLLAMA=true
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - DOCKER_ENV=true
+      - PYTHONUNBUFFERED=1
+      - TOKENIZERS_PARALLELISM=false
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - huggingface_cache:/root/.cache/huggingface
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # Use host network mode for easier access to host Ollama (Linux only)
+    # network_mode: host
+
+volumes:
+  huggingface_cache:

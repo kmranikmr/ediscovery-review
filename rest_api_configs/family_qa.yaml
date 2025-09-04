@@ -1,0 +1,88 @@
+components:
+  generator:
+    init_parameters:
+      generation_kwargs:
+        max_tokens: 1000
+        temperature: 0.1
+      keep_alive: null
+      model: mistral
+      raw: false
+      streaming_callback: null
+      system_prompt: null
+      template: null
+      timeout: 120
+      url: http://localhost:11434
+    type: haystack_integrations.components.generators.ollama.generator.OllamaGenerator
+  prompt_builder:
+    init_parameters:
+      required_variables:
+      - query
+      - documents
+      template: "\n            You are an expert document analyst. Answer the following\
+        \ question based on the email and its attachments.\n\n            Question:\
+        \ {{ query }}\n\n            Email and Attachments:\n            {% for document\
+        \ in documents %}\n            ---\n            Document {{ loop.index }}:\n\
+        \            {{ document.content }}\n            ---\n            {% endfor\
+        \ %}\n\n            Instructions:\n            1. Search comprehensively across\
+        \ ALL documents (main email and attachments)\n            2. Identify which\
+        \ specific document(s) contain relevant information\n            3. Synthesize\
+        \ information from multiple documents if needed\n            4. Cite your\
+        \ sources clearly (e.g., \"Document 2 shows...\", \"According to the attachment\
+        \ in Document 3...\")\n            5. If information spans multiple documents,\
+        \ provide a coherent combined answer\n            6. Include specific text\
+        \ snippets that support your answer\n            7. Only say \"Information\
+        \ not found\" if NONE of the documents contain relevant information\n    \
+        \        8. Be thorough - don't miss relevant details in any document\n\n\
+        \            Answer:\n            "
+      variables: null
+    type: haystack.components.builders.prompt_builder.PromptBuilder
+  retriever:
+    init_parameters:
+      custom_query: null
+      document_store:
+        init_parameters:
+          create_index: true
+          embedding_dim: 768
+          hosts:
+          - host: localhost
+            port: 9200
+            scheme: http
+          http_auth: null
+          index: ediscovery_documents
+          mappings:
+            dynamic_templates:
+            - strings:
+                mapping:
+                  type: keyword
+                match_mapping_type: string
+            properties:
+              content:
+                type: text
+              embedding:
+                dimension: 768
+                index: true
+                type: knn_vector
+          max_chunk_bytes: 104857600
+          method: null
+          return_embedding: false
+          settings:
+            index.knn: true
+          timeout: null
+          use_ssl: null
+          verify_certs: null
+        type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+      filter_policy: merge
+      filters: {}
+      fuzziness: AUTO
+      raise_on_failure: true
+      scale_score: false
+      top_k: 20
+    type: haystack_integrations.components.retrievers.opensearch.bm25_retriever.OpenSearchBM25Retriever
+connection_type_validation: true
+connections:
+- receiver: prompt_builder.documents
+  sender: retriever.documents
+- receiver: generator.prompt
+  sender: prompt_builder.prompt
+max_runs_per_component: 100
+metadata: {}

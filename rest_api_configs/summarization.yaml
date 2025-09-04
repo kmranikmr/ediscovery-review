@@ -1,0 +1,60 @@
+components:
+  cleaner:
+    init_parameters:
+      ascii_only: false
+      keep_id: false
+      remove_empty_lines: true
+      remove_extra_whitespaces: true
+      remove_regex: null
+      remove_repeated_substrings: false
+      remove_substrings: null
+      unicode_normalization: null
+    type: haystack.components.preprocessors.document_cleaner.DocumentCleaner
+  generator:
+    init_parameters:
+      generation_kwargs:
+        max_tokens: 1000
+        temperature: 0.1
+      keep_alive: null
+      model: mistral
+      raw: false
+      streaming_callback: null
+      system_prompt: null
+      template: null
+      timeout: 120
+      url: http://localhost:11434
+    type: haystack_integrations.components.generators.ollama.generator.OllamaGenerator
+  prompt_builder:
+    init_parameters:
+      required_variables:
+      - documents
+      template: "\nAnalyze this email and extract ALL specific details:\n\n{% for\
+        \ document in documents %}\n{{ document.content }}\n{% endfor %}\n\nCreate\
+        \ a summary with these exact details:\n- Budget/Money: List exact dollar amounts\n\
+        - Timeline: List exact timeframes and deadlines  \n- Features: List all technical\
+        \ features mentioned\n- People: List names and roles\n- Actions: List what\
+        \ needs to be done and when\n\nBe specific and include exact numbers, dates,\
+        \ and names from the email.\n\nSummary:\n            "
+      variables: null
+    type: haystack.components.builders.prompt_builder.PromptBuilder
+  splitter:
+    init_parameters:
+      extend_abbreviations: true
+      language: en
+      respect_sentence_boundary: false
+      split_by: word
+      split_length: 4000
+      split_overlap: 500
+      split_threshold: 0
+      use_split_rules: true
+    type: haystack.components.preprocessors.document_splitter.DocumentSplitter
+connection_type_validation: true
+connections:
+- receiver: splitter.documents
+  sender: cleaner.documents
+- receiver: prompt_builder.documents
+  sender: splitter.documents
+- receiver: generator.prompt
+  sender: prompt_builder.prompt
+max_runs_per_component: 100
+metadata: {}
