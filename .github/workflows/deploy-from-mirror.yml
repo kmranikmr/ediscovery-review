@@ -1,0 +1,140 @@
+name: Deploy to Azure VM from Mirror
+
+on:
+  push:
+    branches: [ main, master ]
+  repository_dispatch:
+    types: [deploy-to-azure]
+
+env:
+  PYTHON_VERSION: '3.12'
+  APP_NAME: 'llm-retrieval-system'
+
+jobs:
+  deploy-to-azure:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies for testing
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    
+    - name: Run basic syntax check
+      run: |
+        python -m py_compile main.py
+        python -m py_compile streamlit_app.py
+    
+    - name: Deploy to Azure VM
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.AZURE_VM_HOST }}
+        username: ${{ secrets.AZURE_VM_USERNAME }}
+        key: ${{ secrets.AZURE_VM_SSH_KEY }}
+        port: ${{ secrets.AZURE_VM_PORT || 22 }}
+        script: |
+          # Navigate to application directory
+          cd /home/${{ secrets.AZURE_VM_USERNAME }}/${{ env.APP_NAME }} || {
+            echo "Creating application directory..."
+            mkdir -p /home/${{ secrets.AZURE_VM_USERNAME }}/${{ env.APP_NAME }}
+            cd /home/${{ secrets.AZURE_VM_USERNAME }}/${{ env.APP_NAME }}
+          }
+          
+          # Pull latest changes
+          echo "Pulling latest changes..."
+          if [ -d ".git" ]; then
+            git fetch origin
+            git reset --hard origin/main || git reset --hard origin/master
+          else
+            git clone ${{ github.server_url }}/${{ github.repository }}.git .
+          fi
+          
+          # Stop existing services
+          echo "Stopping existing services..."
+          pkill -f "python.*main.py" || true
+          pkill -f "streamlit.*run" || true
+          sleep 5
+          
+          # Setup Python virtual environment
+          echo "Setting up Python environment..."
+          if [ ! -d "venv" ]; then
+            python3 -m venv venv
+          fi
+          
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          
+          # Create necessary directories
+          mkdir -p logs
+          mkdir -p data
+          
+          # Copy environment template if .env doesn't exist
+          if [ ! -f ".env" ] && [ -f ".env.template" ]; then
+            cp .env.template .env
+            echo "⚠️  Please update .env file with your configuration"
+          fi
+          
+          # Start FastAPI server
+          echo "Starting FastAPI server..."
+          source venv/bin/activate
+          nohup python main.py > logs/main.log 2>&1 &
+          
+          # Wait for FastAPI to start
+          sleep 10
+          
+          # Start Streamlit app
+          echo "Starting Streamlit application..."
+          nohup streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0 > logs/streamlit.log 2>&1 &
+          
+          # Check if services are running
+          echo "Checking service status..."
+          if pgrep -f "python.*main.py" > /dev/null; then
+            echo "✅ FastAPI server is running"
+          else
+            echo "❌ FastAPI server failed to start"
+            tail -20 logs/main.log
+            exit 1
+          fi
+          
+          if pgrep -f "streamlit.*run" > /dev/null; then
+            echo "✅ Streamlit app is running"
+          else
+            echo "❌ Streamlit app failed to start"
+            tail -20 logs/streamlit.log
+            exit 1
+          fi
+          
+          echo "🚀 Deployment completed successfully!"
+          echo "FastAPI: http://${{ secrets.AZURE_VM_HOST }}:8001"
+          echo "Streamlit: http://${{ secrets.AZURE_VM_HOST }}:8501"
+          
+    - name: Health Check
+      run: |
+        sleep 30
+        echo "Performing health check..."
+        curl -f http://${{ secrets.AZURE_VM_HOST }}:8001/health || exit 1
+        echo "✅ Health check passed"
+        
+  notify-completion:
+    runs-on: ubuntu-latest
+    needs: deploy-to-azure
+    if: always()
+    steps:
+    - name: Notify deployment status
+      run: |
+        if [ "${{ needs.deploy-to-azure.result }}" == "success" ]; then
+          echo "✅ Deployment successful!"
+          echo "🌐 FastAPI: http://${{ secrets.AZURE_VM_HOST }}:8001"
+          echo "🌐 Streamlit: http://${{ secrets.AZURE_VM_HOST }}:8501"
+        else
+          echo "❌ Deployment failed!"
+          exit 1
+        fi

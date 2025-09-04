@@ -1,0 +1,39 @@
+name: Mirror to Deployment Repository
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  APP_NAME: 'llm-retrieval-system'
+
+jobs:
+  mirror-to-deployment-repo:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Mirror to deployment repository
+      uses: pixta-dev/repository-mirroring-action@v1
+      with:
+        target_repo_url: ${{ secrets.DEPLOYMENT_REPO_URL }}
+        ssh_private_key: ${{ secrets.DEPLOYMENT_SSH_KEY }}
+    
+    - name: Trigger deployment in mirror repository
+      uses: peter-evans/repository-dispatch@v2
+      with:
+        token: ${{ secrets.DEPLOYMENT_REPO_TOKEN }}
+        repository: ${{ secrets.DEPLOYMENT_REPO_NAME }}
+        event-type: deploy-to-azure
+        client-payload: |
+          {
+            "source_repo": "${{ github.repository }}",
+            "source_ref": "${{ github.ref }}",
+            "source_sha": "${{ github.sha }}"
+          }
