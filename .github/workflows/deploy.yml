@@ -1,4 +1,4 @@
-name: Deploy to Azure VM (Manual Service Startup)
+name: Deploy to Azure VM edsico (Manual Service Startup)
 
 on:
   push:
