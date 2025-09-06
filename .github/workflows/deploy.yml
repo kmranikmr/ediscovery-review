@@ -3,7 +3,7 @@ name: Deploy to Azure VM (Manual Service Startup)
 on:
   push:
     branches:
-      - main
+      - master
 
 jobs:
   deploy:
