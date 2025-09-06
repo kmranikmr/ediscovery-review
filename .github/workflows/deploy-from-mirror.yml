@@ -1,10 +1,11 @@
 name: Deploy to Azure VM from Mirror
 
 on:
-  push:
-    branches: [ main, master ]
-  repository_dispatch:
-    types: [deploy-to-azure]
+  workflow_dispatch:
+  # push:
+  #   branches: [ main, master ]
+  # repository_dispatch:
+  #   types: [deploy-to-azure]
 
 env:
   PYTHON_VERSION: '3.12'
