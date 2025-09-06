@@ -1,0 +1,52 @@
+name: Deploy to Azure VM (Manual Service Startup)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Deploy to Azure VM
+      env:
+        AZURE_VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+        AZURE_VM_USERNAME: ${{ secrets.AZURE_VM_USERNAME }}
+        AZURE_VM_SSH_KEY: ${{ secrets.AZURE_VM_SSH_KEY }}
+      run: |
+        # Add SSH key
+        echo "${AZURE_VM_SSH_KEY}" > azure_vm_key
+        chmod 600 azure_vm_key
+
+        # SSH into the VM and deploy
+        ssh -i azure_vm_key -o StrictHostKeyChecking=no $AZURE_VM_USERNAME@$AZURE_VM_HOST << 'EOF'
+          cd ~/llm-retrieval-system
+          git pull origin main
+          source venv/bin/activate
+          pip install -r requirements.txt
+
+          # Stop any running FastAPI service
+          if [ -f fastapi.pid ]; then
+            kill $(cat fastapi.pid) || true
+            rm fastapi.pid
+          fi
+
+          # Stop any running Streamlit service
+          if [ -f streamlit.pid ]; then
+            kill $(cat streamlit.pid) || true
+            rm streamlit.pid
+          fi
+
+          # Start FastAPI service
+          nohup python main.py > logs/main.log 2>&1 &
+          echo $! > fastapi.pid
+
+          # Start Streamlit service
+          nohup streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0 > logs/streamlit.log 2>&1 &
+          echo $! > streamlit.pid
+        EOF
