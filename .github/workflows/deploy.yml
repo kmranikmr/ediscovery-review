@@ -28,7 +28,7 @@ jobs:
           set -e
           # Clone repo if missing
           if [ ! -d ~/llm-retrieval-system ]; then
-            git clone  https://github.com/kmranikmr/ediscovery-review.git ~/llm-retrieval-system
+            git clone https://github.com/kmranikmr/ediscovery-review.git ~/llm-retrieval-system
           fi
           cd ~/llm-retrieval-system
 
@@ -40,6 +40,12 @@ jobs:
           # Ensure Python and pip are installed
           if ! command -v python3 &> /dev/null; then
             sudo apt-get update && sudo apt-get install -y python3 python3-pip
+          fi
+
+          # Ensure python3-venv is installed
+          if ! python3 -m venv --help > /dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y python3-venv
           fi
 
           # Create venv if missing
