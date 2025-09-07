@@ -28,7 +28,7 @@ jobs:
           set -e
           # Clone repo if missing
           if [ ! -d ~/llm-retrieval-system ]; then
-            git clone  https://github.com/kmranikmr/ediscovery-review.git~/llm-retrieval-system
+            git clone  https://github.com/kmranikmr/ediscovery-review.git ~/llm-retrieval-system
           fi
           cd ~/llm-retrieval-system
 
