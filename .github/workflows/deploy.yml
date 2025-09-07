@@ -84,6 +84,18 @@ jobs:
             rm streamlit.pid
           fi
 
+          # Install Ollama with GPU support if not already installed
+          if ! command -v ollama &> /dev/null; then
+            curl -fsSL https://ollama.com/install.sh | sh
+          fi
+
+          # Start Ollama in the background (GPU support is automatic if available)
+          nohup ollama serve > logs/ollama.log 2>&1 &
+          sleep 5
+
+          # Pull the Mistral model (if not already present)
+          ollama pull mistral || true
+
           # Start FastAPI service
           nohup python main.py > logs/main.log 2>&1 &
           echo $! > fastapi.pid
