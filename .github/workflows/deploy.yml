@@ -25,10 +25,35 @@ jobs:
 
         # SSH into the VM and deploy
         ssh -i azure_vm_key -o StrictHostKeyChecking=no $AZURE_VM_USERNAME@$AZURE_VM_HOST << 'EOF'
+          set -e
+          # Clone repo if missing
+          if [ ! -d ~/llm-retrieval-system ]; then
+            git clone <YOUR_REPO_URL> ~/llm-retrieval-system
+          fi
           cd ~/llm-retrieval-system
+
+          # Ensure it's a git repo and on the right branch
+          git fetch origin master
+          git checkout master
           git pull origin master
+
+          # Ensure Python and pip are installed
+          if ! command -v python3 &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y python3 python3-pip
+          fi
+
+          # Create venv if missing
+          if [ ! -d venv ]; then
+            python3 -m venv venv
+          fi
           source venv/bin/activate
+
+          # Install requirements
+          pip install --upgrade pip
           pip install -r requirements.txt
+
+          # Ensure logs directory exists
+          mkdir -p logs
 
           # Stop any running FastAPI service
           if [ -f fastapi.pid ]; then
