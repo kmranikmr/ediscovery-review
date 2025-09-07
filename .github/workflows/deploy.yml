@@ -89,6 +89,6 @@ jobs:
           echo $! > fastapi.pid
 
           # Start Streamlit service
-          nohup streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0 > logs/streamlit.log 2>&1 &
+          nohup streamlit run streamlit/app.py --server.port=8501 --server.address=0.0.0.0 > logs/streamlit.log 2>&1 &
           echo $! > streamlit.pid
         EOF
