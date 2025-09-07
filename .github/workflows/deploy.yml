@@ -48,11 +48,23 @@ jobs:
             sudo apt-get install -y python3-venv
           fi
 
+          # Remove broken venv if it exists
+          if [ -d venv ] && [ ! -f venv/bin/activate ]; then
+            rm -rf venv
+          fi
+
           # Create venv if missing
           if [ ! -d venv ]; then
-            python3 -m venv venv
+            python3 -m venv venv || (echo "venv creation failed" && exit 1)
           fi
-          source venv/bin/activate
+
+          # Activate venv
+          if [ -f venv/bin/activate ]; then
+            source venv/bin/activate
+          else
+            echo "venv/bin/activate not found, venv creation failed"
+            exit 1
+          fi
 
           # Install requirements
           pip install --upgrade pip
