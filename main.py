@@ -10,6 +10,15 @@ import random
 import requests
 import uvicorn
 from contextlib import asynccontextmanager
+import os
+
+# Load environment variables from .env if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("Loaded environment variables from .env (if present)")
+except ImportError:
+    print("python-dotenv not installed; skipping .env loading")
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -134,34 +143,37 @@ async def lifespan(app: FastAPI):
         
         # Check for Docker environment settings
         skip_opensearch = os.getenv("SKIP_OPENSEARCH", "false").lower() == "true"
-        skip_ollama = os.getenv("SKIP_OLLAMA", "false").lower() == "true"
-        ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        
-        print(f"Docker environment settings:")
-        print(f"  - Skip OpenSearch: {skip_opensearch}")
-        print(f"  - Skip Ollama: {skip_ollama}")
-        print(f"  - Ollama URL: {ollama_base_url}")
+        # Modular LLM provider selection
+        model_type = os.getenv("LLM_PROVIDER", "ollama")  # 'ollama', 'openai', 'huggingface'
+        model_name = os.getenv("LLM_MODEL_NAME", "mistral")
+        base_url = os.getenv("LLM_BASE_URL", None)
+        api_key = os.getenv("OPENAI_API_KEY", None)
+        temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+        max_tokens = int(os.getenv("LLM_MAX_TOKENS", "1000"))
+
+        print(f"  - LLM Provider: {model_type}")
+        print(f"  - Model Name: {model_name}")
+        print(f"  - Base URL: {base_url}")
+        print(f"  - Temperature: {temperature}")
+        print(f"  - Max Tokens: {max_tokens}")
         print(f"  - Debug Mode: {DEBUG_MODE}")
-        
-        if not skip_ollama:
-            try:
-                api_manager = initialize_haystack_rest_api(
-                    model_type="ollama",
-                    model_name="mistral",
-                    base_url=ollama_base_url,
-                    temperature=0.1,
-                    use_opensearch=not skip_opensearch  # Disable OpenSearch if skipped
-                )
-                pipelines = api_manager.pipelines
-                print(f"Initialized {len(pipelines)} pipelines: {list(pipelines.keys())}")
-                print(f"Document store type: {'OpenSearch' if api_manager.use_opensearch and not skip_opensearch else 'InMemory'}")
-            except Exception as e:
-                print(f"⚠️ Failed to initialize Haystack pipelines: {e}")
-                print("Falling back to minimal initialization")
-                api_manager = None
-                pipelines = {}
-        else:
-            print("⚠️ Ollama disabled for Docker testing - running in mock mode")
+
+        try:
+            api_manager = initialize_haystack_rest_api(
+                model_type=model_type,
+                model_name=model_name,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                use_opensearch=not skip_opensearch
+            )
+            pipelines = api_manager.pipelines
+            print(f"Initialized {len(pipelines)} pipelines: {list(pipelines.keys())}")
+            print(f"Document store type: {'OpenSearch' if api_manager.use_opensearch and not skip_opensearch else 'InMemory'}")
+        except Exception as e:
+            print(f"⚠️ Failed to initialize Haystack pipelines: {e}")
+            print("Falling back to minimal initialization")
             api_manager = None
             pipelines = {}
         
@@ -180,7 +192,6 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"⚠️ Failed to initialize Enhanced ML Processor: {e}")
                 ml_processor = None
-        
     except Exception as e:
         print(f"Failed to initialize pipelines: {e}")
         print("⚠️ API will start but some functionality may be limited")
