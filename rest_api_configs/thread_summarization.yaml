@@ -13,8 +13,8 @@ components:
   generator:
     init_parameters:
       generation_kwargs:
-        max_tokens: 1000
-        temperature: 0.1
+        max_tokens: 2048
+        temperature: 0.2
       keep_alive: null
       model: mistral
       raw: false
@@ -28,15 +28,23 @@ components:
     init_parameters:
       required_variables:
       - documents
-      template: "\n            You are an expert email analyst. Summarize the following\
-        \ email thread chronologically.\n\n            Email Thread:\n           \
-        \ {% for document in documents %}\n            {{ document.content }}\n  \
-        \          {% endfor %}\n\n            Provide a thread summary that:\n  \
-        \          1. Shows the conversation flow and progression\n            2.\
-        \ Identifies key participants and their roles\n            3. Tracks decisions\
-        \ made throughout the thread\n            4. Highlights unresolved issues\
-        \ or pending actions\n            5. Notes the current status/conclusion\n\
-        \n            Thread Summary:\n            "
+      template: 'You are an expert email analyst. Summarize the following email thread
+        in chronological order.
+
+        Thread: {{documents}}
+
+        Your summary must:
+
+        - Clearly show the sequence and flow of the conversation.
+
+        - Identify key participants and their roles.
+
+        - Track decisions, unresolved issues, and the current status.
+
+        Return the summary as a concise paragraph.
+
+        Make the summary moderately detailed (3-5 sentences or 4-6 bullets, about
+        80 words).'
       variables: null
     type: haystack.components.builders.prompt_builder.PromptBuilder
   splitter:

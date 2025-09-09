@@ -13,8 +13,8 @@ components:
   generator:
     init_parameters:
       generation_kwargs:
-        max_tokens: 1000
-        temperature: 0.1
+        max_tokens: 2048
+        temperature: 0.2
       keep_alive: null
       model: mistral
       raw: false
@@ -28,15 +28,25 @@ components:
     init_parameters:
       required_variables:
       - documents
-      template: "\n            You are an expert email analyst. Summarize the following\
-        \ email and its attachments as a cohesive unit.\n\n            Email and Attachments:\n\
-        \            {% for document in documents %}\n            {{ document.content\
-        \ }}\n            {% endfor %}\n\n            Provide a comprehensive summary\
-        \ that:\n            1. Summarizes the main email content\n            2.\
-        \ Incorporates key information from attachments\n            3. Identifies\
-        \ relationships between email and attachments\n            4. Highlights important\
-        \ decisions or action items\n            5. Notes any discrepancies or additional\
-        \ context from attachments\n\n            Summary:\n            "
+      template: 'You are an expert email analyst. Summarize the following email and
+        its attachments as a cohesive unit.
+
+        Email and Attachments: {{documents}}
+
+        Your summary must:
+
+        - Clearly summarize the main email content.
+
+        - Incorporate and highlight key information from all attachments.
+
+        - Identify relationships between the email and its attachments.
+
+        - Note any important decisions, action items, or discrepancies.
+
+        Return the summary as a concise paragraph.
+
+        Make the summary moderately detailed (3-5 sentences or 4-6 bullets, about
+        80 words).'
       variables: null
     type: haystack.components.builders.prompt_builder.PromptBuilder
   splitter:

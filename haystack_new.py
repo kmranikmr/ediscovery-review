@@ -66,9 +66,11 @@ class ModelConfig:
 class EnhancedEmailSummarizerNode:
     """Enhanced summarizer node with multi-model support"""
 
-    def __init__(self, model_config: ModelConfig, task_type: str = "single_document"):
+    def __init__(self, model_config: ModelConfig, task_type: str = "single_document", summary_format: str = "paragraph", summary_length: str = "medium"):
         self.model_config = model_config
         self.task_type = task_type
+        self.summary_format = summary_format
+        self.summary_length = summary_length
         self.prompt_template = self._get_prompt_template()
         self.generator = self._create_generator()
 
@@ -95,18 +97,44 @@ class EnhancedEmailSummarizerNode:
             raise ValueError(f"Unsupported model type: {self.model_config.model_type}")
 
     def _get_prompt_template(self) -> str:
-        """Get appropriate prompt template based on task type and user format preference"""
-        # Use format variable if present, else default to paragraph
-        if getattr(self, 'format', 'paragraph') == "bulleted":
-            format_instruction = "Return only a bulleted list of the main points. Do not include any section headers, categories, or extra explanation."
+        """Get appropriate prompt template based on task type, format, and length"""
+        # Format instruction
+        if self.summary_format == "bulleted":
+            format_instruction = "Return only a bulleted list of the main points. Use a dash (-) at the start of each bullet. Do not include any section headers, categories, or extra explanation."
         else:
             format_instruction = "Return the summary as a concise paragraph."
+
+        # Length instruction
+        if self.summary_length == "short":
+            length_instruction = "Make the summary very brief (1-2 sentences or 2-3 bullets, max 40 words)."
+        elif self.summary_length == "long":
+            length_instruction = "Make the summary detailed and comprehensive (at least 6-8 sentences or 8+ bullets, 150+ words)."
+        else:
+            length_instruction = "Make the summary moderately detailed (3-5 sentences or 4-6 bullets, about 80 words)."
+
         if self.task_type == "single_document":
-            return f"Summarize the following text.\nText: {{text}}\n{format_instruction}"
+            return f"Summarize the following text.\nText: {{text}}\n{format_instruction}\n{length_instruction}"
         elif self.task_type == "family_summarization":
-            return f"Summarize the following email and its attachments.\nEmail and Attachments: {{documents}}\n{format_instruction}"
+            return (
+                "You are an expert email analyst. Summarize the following email and its attachments as a cohesive unit.\n"
+                "Email and Attachments: {{documents}}\n"
+                "Your summary must:\n"
+                "- Clearly summarize the main email content.\n"
+                "- Incorporate and highlight key information from all attachments.\n"
+                "- Identify relationships between the email and its attachments.\n"
+                "- Note any important decisions, action items, or discrepancies.\n"
+                f"{format_instruction}\n{length_instruction}"
+            )
         elif self.task_type == "thread_summarization":
-            return f"Summarize the following email thread.\nThread: {{documents}}\n{format_instruction}"
+            return (
+                "You are an expert email analyst. Summarize the following email thread in chronological order.\n"
+                "Thread: {{documents}}\n"
+                "Your summary must:\n"
+                "- Clearly show the sequence and flow of the conversation.\n"
+                "- Identify key participants and their roles.\n"
+                "- Track decisions, unresolved issues, and the current status.\n"
+                f"{format_instruction}\n{length_instruction}"
+            )
         else:
             raise ValueError(f"Unsupported task type: {self.task_type}")
 
@@ -406,20 +434,56 @@ class HaystackRestAPIManager:
             return None
 
     def _initialize_pipelines(self):
-        """Initialize all pipelines with model configuration"""
+        """Initialize all pipelines with model configuration, with granular debug logging"""
         logger.info(f"Initializing pipelines with {self.model_config.model_type} model: {self.model_config.model_name}")
-
-        # Create pipelines - each pipeline will create its own component instances
-        self.pipelines = {
-            "summarization": self._create_summarization_pipeline(),
-            "family_summarization": self._create_family_summarization_pipeline(),
-            "thread_summarization": self._create_thread_summarization_pipeline(),
-            "qa": self._create_qa_pipeline(),
-            "family_qa": self._create_family_qa_pipeline(),
-            "classification": self._create_classification_pipeline()
-        }
-
-        logger.info("All pipelines initialized successfully")
+        self.pipelines = {}
+        errors = []
+        # Summarization pipeline
+        try:
+            self.pipelines["summarization"] = self._create_summarization_pipeline()
+            logger.info("summarization pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize summarization pipeline: {e}")
+            errors.append(f"summarization: {e}")
+        # Family summarization pipeline
+        try:
+            self.pipelines["family_summarization"] = self._create_family_summarization_pipeline()
+            logger.info("family_summarization pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize family_summarization pipeline: {e}")
+            errors.append(f"family_summarization: {e}")
+        # Thread summarization pipeline
+        try:
+            self.pipelines["thread_summarization"] = self._create_thread_summarization_pipeline()
+            logger.info("thread_summarization pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize thread_summarization pipeline: {e}")
+            errors.append(f"thread_summarization: {e}")
+        # QA pipeline
+        try:
+            self.pipelines["qa"] = self._create_qa_pipeline()
+            logger.info("qa pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize qa pipeline: {e}")
+            errors.append(f"qa: {e}")
+        # Family QA pipeline
+        try:
+            self.pipelines["family_qa"] = self._create_family_qa_pipeline()
+            logger.info("family_qa pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize family_qa pipeline: {e}")
+            errors.append(f"family_qa: {e}")
+        # Classification pipeline
+        try:
+            self.pipelines["classification"] = self._create_classification_pipeline()
+            logger.info("classification pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize classification pipeline: {e}")
+            errors.append(f"classification: {e}")
+        if errors:
+            logger.error(f"Pipeline initialization errors: {errors}")
+        else:
+            logger.info("All pipelines initialized successfully")
 
     def index_documents(self, documents: List[Document], collection_id: str = "default") -> Dict[str, Any]:
         """Index documents in the document store - only uses collection_id for organization"""
@@ -752,20 +816,20 @@ Answer:"""
 
     def _create_family_summarization_pipeline(self) -> Pipeline:
         """Create family summarization pipeline"""
+        # Default to paragraph/medium, will be overridden at runtime if meta is set
         family_summarizer_node = EnhancedEmailSummarizerNode(
             model_config=self.model_config,
-            task_type="family_summarization"
+            task_type="family_summarization",
+            summary_format="paragraph",
+            summary_length="medium"
         )
         pipeline = Pipeline()
-        # Create new component instances for this pipeline
         cleaner = DocumentCleaner()
         splitter = DocumentSplitter(split_by="word", split_length=3000, split_overlap=300)
-        
         pipeline.add_component("cleaner", cleaner)
         pipeline.add_component("splitter", splitter)
         pipeline.add_component("prompt_builder", family_summarizer_node.to_components()["prompt_builder"])
         pipeline.add_component("generator", family_summarizer_node.to_components()["generator"])
-
         pipeline.connect("cleaner.documents", "splitter.documents")
         pipeline.connect("splitter.documents", "prompt_builder.documents")
         pipeline.connect("prompt_builder.prompt", "generator.prompt")
@@ -775,18 +839,17 @@ Answer:"""
         """Create thread summarization pipeline"""
         thread_summarizer_node = EnhancedEmailSummarizerNode(
             model_config=self.model_config,
-            task_type="thread_summarization"
+            task_type="thread_summarization",
+            summary_format="paragraph",
+            summary_length="medium"
         )
         pipeline = Pipeline()
-        # Create new component instances for this pipeline
         cleaner = DocumentCleaner()
         splitter = DocumentSplitter(split_by="word", split_length=1000, split_overlap=50)
-        
         pipeline.add_component("cleaner", cleaner)
         pipeline.add_component("splitter", splitter)
         pipeline.add_component("prompt_builder", thread_summarizer_node.to_components()["prompt_builder"])
         pipeline.add_component("generator", thread_summarizer_node.to_components()["generator"])
-
         pipeline.connect("cleaner.documents", "splitter.documents")
         pipeline.connect("splitter.documents", "prompt_builder.documents")
         pipeline.connect("prompt_builder.prompt", "generator.prompt")

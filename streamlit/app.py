@@ -900,32 +900,34 @@ def summarization_tab():
             
         elif summary_type == "Family (/summarize/family)":
             st.info("👨‍👩‍👧‍👦 **Family Summarization**: Designed for email families (email + attachments as one unit). Takes document format input.")
-            default_text = """From: john.smith@company.com
-To: team@company.com
-Subject: Q4 Project Status
-
-Hi Team,
-
-I wanted to update everyone on our Q4 project status. We've completed 75% of the development work and are on track for the December launch. 
-
-Key achievements:
-- Database migration completed
-- API integration tests passed
-- User interface redesign approved
-
-Next steps:
-- Final testing phase (2 weeks)
-- Documentation completion
-- Training material preparation
-
-Please let me know if you have any questions.
-
-Best regards,
-John
-
----
-Attachment: project_timeline.pdf (contains detailed project schedule)
-Attachment: budget_report.xlsx (Q4 budget allocation)"""
+            default_text = """{
+  "documents": [
+    {
+      "content": "From: john.smith@company.com\\nTo: team@company.com\\nSubject: Q4 Project Status\\n\\nHi Team,\\n\\nI wanted to update everyone on our Q4 project status. We've completed 75% of the development work and are on track for the December launch.\\n\\nKey achievements:\\n- Database migration completed\\n- API integration tests passed\\n- User interface redesign approved\\n\\nNext steps:\\n- Final testing phase (2 weeks)\\n- Documentation completion\\n- Training material preparation\\n\\nPlease let me know if you have any questions.\\n\\nBest regards,\\nJohn",
+      "meta": {
+        "source": "email",
+        "document_id": "email1",
+        "email_subject": "Q4 Project Status"
+      }
+    },
+    {
+      "content": "Project Timeline Summary\\n\\nPhase 1: Requirements (Completed)\\nPhase 2: Development (75% complete)\\nPhase 3: Testing (Starts Nov 15)\\nPhase 4: Deployment (Dec 1-15)\\n\\nKey Milestones:\\n- Nov 1: Feature freeze\\n- Nov 15: Testing begins\\n- Dec 1: Production deployment\\n- Dec 15: Go-live\\n\\nBudget Status: $125,000 spent of $150,000 allocated",
+      "meta": {
+        "source": "attachment",
+        "document_id": "attach1", 
+        "attachment_name": "project_timeline.pdf"
+      }
+    },
+    {
+      "content": "Q4 Budget Allocation Report\\n\\nDevelopment: $75,000\\nTesting: $25,000\\nDeployment: $20,000\\nContingency: $30,000\\nTotal: $150,000\\n\\nSpent to Date: $125,000\\nRemaining: $25,000\\n\\nProjected completion within budget.",
+      "meta": {
+        "source": "attachment",
+        "document_id": "attach2",
+        "attachment_name": "budget_report.xlsx"
+      }
+    }
+  ]
+}"""
             
         elif summary_type == "Thread (/summarize/thread)":
             st.info("🧵 **Thread Summarization**: Designed for email thread conversations. Takes document format input.")
@@ -1000,8 +1002,20 @@ IT Operations Team"""
 {
   "documents": [
     {
-      "content": "document text...",
-      "meta": {"source": "email"}
+      "content": "This is the main email body text.",
+      "meta": {
+        "source": "email",
+        "document_id": "email1",
+        "email_subject": "Project Update"
+      }
+    },
+    {
+      "content": "This is the extracted text from the attached PDF.",
+      "meta": {
+        "source": "attachment", 
+        "document_id": "attach1",
+        "attachment_name": "project_update.pdf"
+      }
     }
   ]
 }
@@ -1025,6 +1039,11 @@ IT Operations Team"""
     
     # Additional options in expander
     with st.expander("🔧 Advanced Options"):
+        extra_instruction = st.text_area(
+            "Extra Instruction (optional)",
+            value="",
+            help="Add any custom instruction for the summarization model (e.g., focus on risks, use simple language, etc.)"
+        )
         summary_format = st.radio(
             "Summary Format:",
             ["paragraph", "bulleted"],
@@ -1044,6 +1063,8 @@ IT Operations Team"""
                 bart_summary_type = st.selectbox("Summary Type:", ["business", "detailed", "concise"], index=1)
             with col_len:
                 max_length = st.slider("Max Length:", 50, 300, 150)
+        elif summary_type in ["Family (/summarize/family)", "Thread (/summarize/thread)"]:
+            length = st.selectbox("Summary Length:", ["short", "medium", "long"], index=1)
         else:
             st.info("Family and Thread summarization use default settings optimized for email content.")
     
@@ -1058,7 +1079,8 @@ IT Operations Team"""
                         "email_text": text_to_summarize,
                         "summary_type": bart_summary_type,
                         "max_length": max_length,
-                        "min_length": max_length // 3
+                        "min_length": max_length // 3,
+                        "extra_instruction": extra_instruction.strip() if extra_instruction else None
                     }
                     endpoint = "/summarize/bart-only"
                 elif summary_type == "Regular (/summarize)":
@@ -1068,30 +1090,59 @@ IT Operations Team"""
                         "length": length,
                         "format": summary_format,
                         "focus": focus,
-                        "extract_keywords": extract_keywords
+                        "extract_keywords": extract_keywords,
+                        "extra_instruction": extra_instruction.strip() if extra_instruction else None
                     }
                     endpoint = "/summarize"
-                else:
-                    # Family and Thread use SummarizationRequest format (documents)
+                elif summary_type in ["Family (/summarize/family)", "Thread (/summarize/thread)"]:
                     endpoint_map = {
                         "Family (/summarize/family)": "/summarize/family",
                         "Thread (/summarize/thread)": "/summarize/thread"
                     }
                     endpoint = endpoint_map[summary_type]
-                    # Use documents format for family and thread, add format to meta
-                    data = {
-                        "documents": [
-                            {
-                                "content": text_to_summarize,
-                                "meta": {
-                                    "source": "user_input",
-                                    "type": "family" if "family" in summary_type.lower() else "thread",
-                                    "timestamp": datetime.now().isoformat(),
-                                    "format": summary_format
-                                }
+                    
+                    # Parse the text as JSON to get proper documents format
+                    try:
+                        import json
+                        parsed_data = json.loads(text_to_summarize)
+                        if "documents" in parsed_data:
+                            # Use the parsed documents directly
+                            data = {
+                                "documents": parsed_data["documents"],
+                                "extra_instruction": extra_instruction.strip() if extra_instruction else None
                             }
-                        ]
-                    }
+                        else:
+                            # Fallback: treat as single document
+                            data = {
+                                "documents": [
+                                    {
+                                        "content": text_to_summarize,
+                                        "meta": {
+                                            "source": "user_input",
+                                            "type": "family" if "family" in summary_type.lower() else "thread",
+                                            "timestamp": datetime.now().isoformat()
+                                        }
+                                    }
+                                ],
+                                "extra_instruction": extra_instruction.strip() if extra_instruction else None
+                            }
+                    except json.JSONDecodeError:
+                        # If not valid JSON, treat as plain text
+                        data = {
+                            "documents": [
+                                {
+                                    "content": text_to_summarize,
+                                    "meta": {
+                                        "source": "user_input",
+                                        "type": "family" if "family" in summary_type.lower() else "thread",
+                                        "timestamp": datetime.now().isoformat()
+                                    }
+                                }
+                            ],
+                            "extra_instruction": extra_instruction.strip() if extra_instruction else None
+                        }
+                else:
+                    st.warning("Unknown summarization type selected.")
                 
                 # Show what we're sending to the API
                 with st.expander("🔍 API Request Details"):
