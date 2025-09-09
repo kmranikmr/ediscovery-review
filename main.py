@@ -239,8 +239,7 @@ class SummarizationRequest(BaseModel):
 class TextSummarizationRequest(BaseModel):
     text: str = Field(..., description="Text to summarize")
     length: str = Field(default="medium", description="Summary length: short, medium, long")
-    focus: str = Field(default="general", description="Focus area for summarization")
-    extract_keywords: bool = Field(default=True, description="Extract keywords")
+    format: str = Field(default="paragraph", description="Summary format: 'bulleted' or 'paragraph'")
 
 class QARequest(BaseModel):
     query: str
@@ -510,32 +509,22 @@ async def summarize_documents(request: TextSummarizationRequest):
         if "summarization" not in pipelines:
             # Create a simple mock summarization response
             import re
-            
             # Simple extractive summarization: take first few sentences
             sentences = re.split(r'[.!?]+', request.text)
             sentences = [s.strip() for s in sentences if s.strip()]
-            
             if request.length == "short":
                 summary_sentences = sentences[:2]
             elif request.length == "long":
                 summary_sentences = sentences[:5]
             else:  # medium
                 summary_sentences = sentences[:3]
-            
-            summary = '. '.join(summary_sentences) + '.'
-            
+            if request.format == "bulleted":
+                summary = '\n'.join([f"- {s}" for s in summary_sentences])
+            else:
+                summary = '. '.join(summary_sentences) + '.'
             result = {
-                "summary": summary,
-                "insights": f"Analyzed {len(sentences)} sentences with {request.focus} focus"
+                "summary": summary
             }
-            
-            if request.extract_keywords:
-                # Simple keyword extraction (common words)
-                words = request.text.lower().split()
-                common_words = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should']
-                keywords = [word for word in set(words) if len(word) > 3 and word not in common_words][:5]
-                result["keywords"] = keywords
-            
             return APIResponse(success=True, result=result)
         
         # Use existing summarization pipeline if available

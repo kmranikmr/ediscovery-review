@@ -1025,6 +1025,12 @@ IT Operations Team"""
     
     # Additional options in expander
     with st.expander("🔧 Advanced Options"):
+        summary_format = st.radio(
+            "Summary Format:",
+            ["paragraph", "bulleted"],
+            index=0,
+            help="Choose the format for the summary: paragraph or bulleted list"
+        )
         if summary_type == "Regular (/summarize)":
             col_len, col_focus = st.columns(2)
             with col_len:
@@ -1055,26 +1061,24 @@ IT Operations Team"""
                         "min_length": max_length // 3
                     }
                     endpoint = "/summarize/bart-only"
-                    
                 elif summary_type == "Regular (/summarize)":
                     # Regular summarization uses TextSummarizationRequest format
                     data = {
                         "text": text_to_summarize,
                         "length": length,
+                        "format": summary_format,
                         "focus": focus,
                         "extract_keywords": extract_keywords
                     }
                     endpoint = "/summarize"
-                    
                 else:
                     # Family and Thread use SummarizationRequest format (documents)
                     endpoint_map = {
                         "Family (/summarize/family)": "/summarize/family",
                         "Thread (/summarize/thread)": "/summarize/thread"
                     }
-                    
                     endpoint = endpoint_map[summary_type]
-                    # Use documents format for family and thread
+                    # Use documents format for family and thread, add format to meta
                     data = {
                         "documents": [
                             {
@@ -1082,7 +1086,8 @@ IT Operations Team"""
                                 "meta": {
                                     "source": "user_input",
                                     "type": "family" if "family" in summary_type.lower() else "thread",
-                                    "timestamp": datetime.now().isoformat()
+                                    "timestamp": datetime.now().isoformat(),
+                                    "format": summary_format
                                 }
                             }
                         ]

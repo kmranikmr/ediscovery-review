@@ -95,62 +95,18 @@ class EnhancedEmailSummarizerNode:
             raise ValueError(f"Unsupported model type: {self.model_config.model_type}")
 
     def _get_prompt_template(self) -> str:
-        """Get appropriate prompt template based on task type"""
+        """Get appropriate prompt template based on task type and user format preference"""
+        # Use format variable if present, else default to paragraph
+        if getattr(self, 'format', 'paragraph') == "bulleted":
+            format_instruction = "Return only a bulleted list of the main points. Do not include any section headers, categories, or extra explanation."
+        else:
+            format_instruction = "Return the summary as a concise paragraph."
         if self.task_type == "single_document":
-            return """
-Analyze this email and extract ALL specific details:
-
-{% for document in documents %}
-{{ document.content }}
-{% endfor %}
-
-Create a summary with these exact details:
-- Budget/Money: List exact dollar amounts
-- Timeline: List exact timeframes and deadlines  
-- Features: List all technical features mentioned
-- People: List names and roles
-- Actions: List what needs to be done and when
-
-Be specific and include exact numbers, dates, and names from the email.
-
-Summary:
-            """
+            return f"Summarize the following text.\nText: {{text}}\n{format_instruction}"
         elif self.task_type == "family_summarization":
-            return """
-            You are an expert email analyst. Summarize the following email and its attachments as a cohesive unit.
-
-            Email and Attachments:
-            {% for document in documents %}
-            {{ document.content }}
-            {% endfor %}
-
-            Provide a comprehensive summary that:
-            1. Summarizes the main email content
-            2. Incorporates key information from attachments
-            3. Identifies relationships between email and attachments
-            4. Highlights important decisions or action items
-            5. Notes any discrepancies or additional context from attachments
-
-            Summary:
-            """
+            return f"Summarize the following email and its attachments.\nEmail and Attachments: {{documents}}\n{format_instruction}"
         elif self.task_type == "thread_summarization":
-            return """
-            You are an expert email analyst. Summarize the following email thread chronologically.
-
-            Email Thread:
-            {% for document in documents %}
-            {{ document.content }}
-            {% endfor %}
-
-            Provide a thread summary that:
-            1. Shows the conversation flow and progression
-            2. Identifies key participants and their roles
-            3. Tracks decisions made throughout the thread
-            4. Highlights unresolved issues or pending actions
-            5. Notes the current status/conclusion
-
-            Thread Summary:
-            """
+            return f"Summarize the following email thread.\nThread: {{documents}}\n{format_instruction}"
         else:
             raise ValueError(f"Unsupported task type: {self.task_type}")
 
