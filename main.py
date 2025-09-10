@@ -25,6 +25,7 @@ from typing import List, Dict, Any, Optional
 import yaml
 from haystack import Pipeline
 from haystack.dataclasses import Document
+from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 
 # Debug mode configuration
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
@@ -41,7 +42,7 @@ except ImportError:
     OpenSearch = None
 
 # Import the manager from our main script
-from haystack_new import initialize_haystack_rest_api
+from haystack_new import initialize_haystack_rest_api, EnhancedEmailSummarizerNode
 
 # Import enhanced ML processor for BART-only endpoints
 try:
@@ -235,12 +236,13 @@ class DocumentInput(BaseModel):
 
 class SummarizationRequest(BaseModel):
     documents: List[DocumentInput]
+    extra_instruction: Optional[str] = Field(default=None, description="Optional extra instruction for the LLM summarizer")
 
 class TextSummarizationRequest(BaseModel):
     text: str = Field(..., description="Text to summarize")
     length: str = Field(default="medium", description="Summary length: short, medium, long")
-    focus: str = Field(default="general", description="Focus area for summarization")
-    extract_keywords: bool = Field(default=True, description="Extract keywords")
+    format: str = Field(default="paragraph", description="Summary format: 'bulleted' or 'paragraph'")
+    extra_instruction: Optional[str] = Field(default=None, description="Optional extra instruction for the LLM summarizer")
 
 class QARequest(BaseModel):
     query: str
@@ -510,48 +512,57 @@ async def summarize_documents(request: TextSummarizationRequest):
         if "summarization" not in pipelines:
             # Create a simple mock summarization response
             import re
-            
             # Simple extractive summarization: take first few sentences
             sentences = re.split(r'[.!?]+', request.text)
             sentences = [s.strip() for s in sentences if s.strip()]
-            
             if request.length == "short":
                 summary_sentences = sentences[:2]
             elif request.length == "long":
                 summary_sentences = sentences[:5]
             else:  # medium
                 summary_sentences = sentences[:3]
-            
-            summary = '. '.join(summary_sentences) + '.'
-            
+            if request.format == "bulleted":
+                summary = '\n'.join([f"- {s}" for s in summary_sentences])
+            else:
+                summary = '. '.join(summary_sentences) + '.'
             result = {
-                "summary": summary,
-                "insights": f"Analyzed {len(sentences)} sentences with {request.focus} focus"
+                "summary": summary
             }
-            
-            if request.extract_keywords:
-                # Simple keyword extraction (common words)
-                words = request.text.lower().split()
-                common_words = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should']
-                keywords = [word for word in set(words) if len(word) > 3 and word not in common_words][:5]
-                result["keywords"] = keywords
-            
             return APIResponse(success=True, result=result)
-        
+
         # Use existing summarization pipeline if available
         # Convert text to documents format for pipeline
         from haystack.dataclasses import Document
         docs = [Document(content=request.text, meta={"source": "user_input"})]
-        result = pipelines["summarization"].run({"documents": docs})
-        
+
+        # Patch the prompt template at runtime if extra_instruction is provided
+        original_prompt = None
+        extra_instruction = getattr(request, "extra_instruction", None)
+        if extra_instruction:
+            try:
+                from haystack_new import PromptBuilder
+                original_prompt = PromptBuilder.SUMMARY_PROMPT_TEMPLATE
+                PromptBuilder.SUMMARY_PROMPT_TEMPLATE = PromptBuilder.build_summary_prompt_template(request.format, request.length, extra_instruction)
+                debug_print(f"[DEBUG] LLM prompt template being sent:\n{PromptBuilder.SUMMARY_PROMPT_TEMPLATE}")
+            except Exception as e:
+                print(f"[ERROR] Failed to patch SUMMARY_PROMPT_TEMPLATE: {e}")
+
+        try:
+            result = pipelines["summarization"].run({"documents": docs})
+        finally:
+            # Restore the original prompt template
+            if extra_instruction and original_prompt is not None:
+                from haystack_new import PromptBuilder
+                PromptBuilder.SUMMARY_PROMPT_TEMPLATE = original_prompt
+
         # Extract result from pipeline response
         if result.get("generator", {}).get("replies"):
             summary_result = result["generator"]["replies"][0]
         else:
             summary_result = "No summary generated"
-        
+
         return APIResponse(success=True, result={"summary": summary_result})
-        
+
     except Exception as e:
         return APIResponse(success=False, error=str(e))
 
@@ -559,16 +570,121 @@ async def summarize_documents(request: TextSummarizationRequest):
 async def summarize_family(request: SummarizationRequest):
     """Summarize email families (email + attachments)"""
     try:
+        debug_print(f"[DEBUG] summarize_family: pipelines loaded: {list(pipelines.keys())}")
         if "family_summarization" not in pipelines:
-            raise HTTPException(status_code=404, detail="Family summarization pipeline not found")
-        
+            debug_print("[DEBUG] summarize_family: Using MOCK fallback (pipeline not loaded)")
+            # Mock response for family summarization
+            import re
+            doc = request.documents[0] if request.documents else None
+            text = doc.content if doc else ""
+            meta = doc.meta if doc and doc.meta else {}
+            summary_format = meta.get("format", "paragraph")
+            length = meta.get("length", "medium")
+            sentences = re.split(r'[.!?]+', text)
+            sentences = [s.strip() for s in sentences if s.strip()]
+            if length == "short":
+                summary_sentences = sentences[:2]
+            elif length == "long":
+                summary_sentences = sentences[:5]
+            else:
+                summary_sentences = sentences[:3]
+            if summary_format == "bulleted":
+                summary = '\n'.join([f"- {s}" for s in summary_sentences])
+            else:
+                summary = '. '.join(summary_sentences) + '.'
+            return APIResponse(success=True, result={"summary": summary})
+
+        # Extract format/length from meta if present, else use defaults
+        meta = request.documents[0].meta if request.documents and request.documents[0].meta else {}
+        summary_format = meta.get("format", "paragraph")
+        summary_length = meta.get("length", "medium")
+        extra_instruction = getattr(request, "extra_instruction", None)
         docs = [Document(content=doc.content, meta=doc.meta) for doc in request.documents]
-        result = pipelines["family_summarization"].run({"documents": docs})
+        debug_print(f"[DEBUG] summarize_family: Using REAL LLM pipeline for family_summarization with format={summary_format}, length={summary_length}, extra_instruction={extra_instruction}")
+        debug_print(f"[DEBUG] Number of docs created: {len(docs)}")
+        debug_print(f"[DEBUG] First doc content preview: {docs[0].content[:100] if docs else 'No docs'}...")
+        debug_print(f"[DEBUG] First doc meta: {docs[0].meta if docs else 'No docs'}")
+        # Build prompt template with extra_instruction if provided
+        def build_family_prompt_template(summary_format, summary_length, extra_instruction=None):
+            base = (
+                "Analyze and summarize the following email family (email + attachments). "
+                "Extract key information from each document including: "
+                "- Document names/filenames (if available) "
+                "- Document types (email, PDF, Word doc, etc.) "
+                "- Key content, dates, numbers, amounts, and important details "
+                "- Names of people, companies, or entities mentioned "
+                "- Any action items, deadlines, or important dates "
+                "Focus on factual content extraction rather than interpretation. "
+            )
+            if extra_instruction:
+                base += f" {extra_instruction.strip()} "
+            if summary_format == "bulleted":
+                format_instruction = "Present as a clear bulleted list of key points extracted from the documents."
+            else:
+                format_instruction = "Present as a concise paragraph highlighting the main content and details."
+            return f"{base}\n\nDocuments to analyze:\n{{documents}}\n\n{format_instruction}"
+        prompt_template = build_family_prompt_template(summary_format, summary_length, extra_instruction)
+        # Render the prompt with structured metadata for each document
+        def format_doc(doc):
+            import re  # Import re module inside the function scope
+            debug_print(f"[DEBUG] format_doc called with doc type: {type(doc)}")
+            debug_print(f"[DEBUG] format_doc doc.content preview: {doc.content[:50] if hasattr(doc, 'content') else 'No content attr'}...")
+            debug_print(f"[DEBUG] format_doc doc.meta: {doc.meta if hasattr(doc, 'meta') else 'No meta attr'}")
+            
+            meta = doc.meta or {}
+            content = doc.content
+            
+            # Handle API format with meta.source
+            source = meta.get('source', '')
+            debug_print(f"[DEBUG] format_doc source: {source}")
+            
+            if source == 'email' or ('From:' in content and 'Subject:' in content):
+                # This is an email - use email_subject from meta or extract from content
+                if 'email_subject' in meta:
+                    filename = f"Email: {meta['email_subject']}"
+                elif 'Subject:' in content:
+                    subject_match = re.search(r'Subject:\s*(.+)', content)
+                    filename = f"Email: {subject_match.group(1).strip()}" if subject_match else "Email message"
+                else:
+                    filename = "Email message"
+                doc_type = "Email"
+                
+            elif source == 'attachment' or 'Attachment:' in content:
+                # This is an attachment - use attachment_name from meta or extract from content
+                if 'attachment_name' in meta:
+                    filename = meta['attachment_name']
+                elif 'filename' in meta:
+                    filename = meta['filename']
+                elif 'Attachment:' in content:
+                    attachment_match = re.search(r'Attachment:\s*([^\s(]+)', content)
+                    filename = attachment_match.group(1).strip() if attachment_match else "Attachment"
+                else:
+                    filename = "Attachment"
+                doc_type = "Attachment"
+                
+            else:
+                # Use metadata or defaults
+                filename = meta.get('filename', meta.get('attachment_name', meta.get('email_subject', 'Document')))
+                doc_type = meta.get('type', 'Document')
+            
+            formatted_result = f"Filename: {filename}\nType: {doc_type}\nContent:\n{content}"
+            debug_print(f"[DEBUG] format_doc result preview: {formatted_result[:100]}...")
+            return formatted_result
+        formatted_docs = "\n\n".join([format_doc(doc) for doc in docs])  # Use docs instead of request.documents
+        # Create the final prompt by replacing the placeholder
+        final_prompt = prompt_template.replace("{documents}", formatted_docs)
+        debug_print(f"[DEBUG] FAMILY LLM prompt being sent (final):\n{final_prompt}")
         
-        return APIResponse(
-            success=True,
-            result=result["generator"]["replies"][0] if result["generator"]["replies"] else "No summary generated"
+        summarizer_node = EnhancedEmailSummarizerNode(
+            model_config=api_manager.model_config,
+            task_type="family_summarization",
+            summary_format=summary_format,
+            summary_length=summary_length
         )
+        
+        # Directly send the final prompt to the generator (no pipeline needed)
+        result = summarizer_node.generator.run(prompt=final_prompt)
+        return APIResponse(success=True, result={"summary": result["replies"][0] if result["replies"] else "No summary generated"})
     except Exception as e:
         return APIResponse(success=False, error=str(e))
 
@@ -576,16 +692,109 @@ async def summarize_family(request: SummarizationRequest):
 async def summarize_thread(request: SummarizationRequest):
     """Summarize email threads"""
     try:
+        debug_print(f"[DEBUG] summarize_thread: pipelines loaded: {list(pipelines.keys())}")
         if "thread_summarization" not in pipelines:
-            raise HTTPException(status_code=404, detail="Thread summarization pipeline not found")
-        
+            debug_print("[DEBUG] summarize_thread: Using MOCK fallback (pipeline not loaded)")
+            # Mock response for thread summarization
+            import re
+            doc = request.documents[0] if request.documents else None
+            text = doc.content if doc else ""
+            meta = doc.meta if doc and doc.meta else {}
+            summary_format = meta.get("format", "paragraph")
+            length = meta.get("length", "medium")
+            sentences = re.split(r'[.!?]+', text)
+            sentences = [s.strip() for s in sentences if s.strip()]
+            if length == "short":
+                summary_sentences = sentences[:2]
+            elif length == "long":
+                summary_sentences = sentences[:5]
+            else:
+                summary_sentences = sentences[:3]
+            if summary_format == "bulleted":
+                summary = '\n'.join([f"- {s}" for s in summary_sentences])
+            else:
+                summary = '. '.join(summary_sentences) + '.'
+            return APIResponse(success=True, result={"summary": summary})
+
+        meta = request.documents[0].meta if request.documents and request.documents[0].meta else {}
+        summary_format = meta.get("format", "paragraph")
+        summary_length = meta.get("length", "medium")
+        extra_instruction = getattr(request, "extra_instruction", None)
         docs = [Document(content=doc.content, meta=doc.meta) for doc in request.documents]
-        result = pipelines["thread_summarization"].run({"documents": docs})
+        debug_print(f"[DEBUG] summarize_thread: Using REAL LLM pipeline for thread_summarization with format={summary_format}, length={summary_length}, extra_instruction={extra_instruction}")
+        debug_print(f"[DEBUG] Number of docs created: {len(docs)}")
+        debug_print(f"[DEBUG] First doc content preview: {docs[0].content[:100] if docs else 'No docs'}...")
+        debug_print(f"[DEBUG] First doc meta: {docs[0].meta if docs else 'No docs'}")
+        # Build prompt template with extra_instruction if provided
+        def build_thread_prompt_template(summary_format, summary_length, extra_instruction=None):
+            base = (
+                "Analyze and summarize the following email thread conversation. "
+                "Extract key information from each message including: "
+                "- Message details (sender, subject, date if available) "
+                "- Email sequence and flow of conversation "
+                "- Key content, decisions, numbers, amounts, and important details "
+                "- Names of people, companies, or entities mentioned "
+                "- Any action items, deadlines, or important dates "
+                "- Thread progression and main discussion points "
+                "Focus on factual content extraction rather than interpretation. "
+            )
+            if extra_instruction:
+                base += f" {extra_instruction.strip()} "
+            if summary_format == "bulleted":
+                format_instruction = "Present as a clear bulleted list of key points from the thread conversation."
+            else:
+                format_instruction = "Present as a concise paragraph highlighting the main thread content and progression."
+            return f"{base}\n\nThread Messages to analyze:\n{{documents}}\n\n{format_instruction}"
+        prompt_template = build_thread_prompt_template(summary_format, summary_length, extra_instruction)
+        # Render the prompt with structured metadata for each document
+        def format_doc(doc):
+            import re  # Import re module inside the function scope
+            debug_print(f"[DEBUG] format_doc called with doc type: {type(doc)}")
+            debug_print(f"[DEBUG] format_doc doc.content preview: {doc.content[:50] if hasattr(doc, 'content') else 'No content attr'}...")
+            debug_print(f"[DEBUG] format_doc doc.meta: {doc.meta if hasattr(doc, 'meta') else 'No meta attr'}")
+            
+            meta = doc.meta or {}
+            content = doc.content
+            
+            # Handle API format with meta.source for threads
+            source = meta.get('source', '')
+            thread_id = meta.get('thread_id', '')
+            debug_print(f"[DEBUG] format_doc source: {source}, thread_id: {thread_id}")
+            
+            if source == 'email' or ('From:' in content and 'Subject:' in content):
+                # This is an email - use email_subject from meta or extract from content
+                if 'email_subject' in meta:
+                    filename = f"Email: {meta['email_subject']}"
+                elif 'Subject:' in content:
+                    subject_match = re.search(r'Subject:\s*(.+)', content)
+                    filename = f"Email: {subject_match.group(1).strip()}" if subject_match else "Email message"
+                else:
+                    filename = "Email message"
+                doc_type = f"Email (Thread: {thread_id})" if thread_id else "Email"
+                
+            else:
+                # Use metadata or defaults
+                filename = meta.get('filename', meta.get('email_subject', 'Thread Message'))
+                doc_type = meta.get('type', 'Message')
+            
+            formatted_result = f"Message: {filename}\nType: {doc_type}\nContent:\n{content}"
+            debug_print(f"[DEBUG] format_doc result preview: {formatted_result[:100]}...")
+            return formatted_result
+        formatted_docs = "\n\n".join([format_doc(doc) for doc in docs])  # Use docs instead of request.documents
+        # Create the final prompt by replacing the placeholder
+        final_prompt = prompt_template.replace("{documents}", formatted_docs)
+        debug_print(f"[DEBUG] THREAD LLM prompt being sent (final):\n{final_prompt}")
         
-        return APIResponse(
-            success=True,
-            result=result["generator"]["replies"][0] if result["generator"]["replies"] else "No summary generated"
+        summarizer_node = EnhancedEmailSummarizerNode(
+            model_config=api_manager.model_config,
+            task_type="thread_summarization",
+            summary_format=summary_format,
+            summary_length=summary_length
         )
+        
+        # Directly send the final prompt to the generator (no pipeline needed)
+        result = summarizer_node.generator.run(prompt=final_prompt)
+        return APIResponse(success=True, result={"summary": result["replies"][0] if result["replies"] else "No summary generated"})
     except Exception as e:
         return APIResponse(success=False, error=str(e))
 
