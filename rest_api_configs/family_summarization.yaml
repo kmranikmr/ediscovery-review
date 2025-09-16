@@ -10,6 +10,9 @@ components:
       remove_substrings: null
       unicode_normalization: null
     type: haystack.components.preprocessors.document_cleaner.DocumentCleaner
+  doc_to_template_vars:
+    init_parameters: {}
+    type: haystack_new.DocumentToTemplateVars
   generator:
     init_parameters:
       generation_kwargs:
@@ -28,27 +31,75 @@ components:
     init_parameters:
       required_variables:
       - documents
-      template: 'You are an expert email analyst. Summarize the following email and
-        its attachments as a cohesive unit.
+      template: 'STRICTLY SUMMARIZE THE EMAIL AND ATTACHMENTS BELOW. DO NOT ADD ANY
+        INFORMATION.
 
-        Email and Attachments: {{documents}}
+        Requirements:
 
-        Your summary must:
+        - ONLY use facts that appear in the provided email and attachments
 
-        - Clearly summarize the main email content.
+        - DO NOT mention documents, attachments, or IDs unless explicitly stated
 
-        - Incorporate and highlight key information from all attachments.
+        - DO NOT invent percentages, numbers, or details
 
-        - Identify relationships between the email and its attachments.
+        - DO NOT add recommendations or analysis not in the text
 
-        - Note any important decisions, action items, or discrepancies.
+        - DO NOT create fake document IDs or reference non-existent attachments
+
+        - Summarize the main email content and incorporate key information from attachments
 
         Return the summary as a concise paragraph.
 
         Make the summary moderately detailed (3-5 sentences or 4-6 bullets, about
-        80 words).'
+        80 words).
+
+        Email and Attachments: {documents}
+
+        Summary:'
       variables: null
     type: haystack.components.builders.prompt_builder.PromptBuilder
+  retriever:
+    init_parameters:
+      custom_query: null
+      document_store:
+        init_parameters:
+          create_index: true
+          embedding_dim: 768
+          hosts:
+          - host: localhost
+            port: 9200
+            scheme: http
+          http_auth: null
+          index: ediscovery_documents
+          mappings:
+            dynamic_templates:
+            - strings:
+                mapping:
+                  type: keyword
+                match_mapping_type: string
+            properties:
+              content:
+                type: text
+              embedding:
+                dimension: 768
+                index: true
+                type: knn_vector
+          max_chunk_bytes: 104857600
+          method: null
+          return_embedding: false
+          settings:
+            index.knn: true
+          timeout: null
+          use_ssl: null
+          verify_certs: null
+        type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+      filter_policy: merge
+      filters: {}
+      fuzziness: AUTO
+      raise_on_failure: true
+      scale_score: false
+      top_k: 15
+    type: haystack_integrations.components.retrievers.opensearch.bm25_retriever.OpenSearchBM25Retriever
   splitter:
     init_parameters:
       extend_abbreviations: true
@@ -62,11 +113,15 @@ components:
     type: haystack.components.preprocessors.document_splitter.DocumentSplitter
 connection_type_validation: true
 connections:
+- receiver: cleaner.documents
+  sender: retriever.documents
 - receiver: splitter.documents
   sender: cleaner.documents
-- receiver: prompt_builder.documents
+- receiver: doc_to_template_vars.documents
   sender: splitter.documents
 - receiver: generator.prompt
   sender: prompt_builder.prompt
+- receiver: prompt_builder.template_variables
+  sender: doc_to_template_vars.template_variables
 max_runs_per_component: 100
 metadata: {}

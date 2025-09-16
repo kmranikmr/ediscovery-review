@@ -1106,9 +1106,21 @@ IT Operations Team"""
                         import json
                         parsed_data = json.loads(text_to_summarize)
                         if "documents" in parsed_data:
-                            # Use the parsed documents directly
+                            # Use the parsed documents directly, but add format/length to first document's meta
+                            documents = parsed_data["documents"]
+                            if documents and isinstance(documents[0], dict) and "meta" in documents[0]:
+                                # Add format and length to the first document's metadata
+                                documents[0]["meta"]["format"] = summary_format
+                                documents[0]["meta"]["length"] = length
+                            elif documents and isinstance(documents[0], dict):
+                                # Create meta if it doesn't exist
+                                documents[0]["meta"] = {
+                                    "format": summary_format,
+                                    "length": length,
+                                    "source": "user_input"
+                                }
                             data = {
-                                "documents": parsed_data["documents"],
+                                "documents": documents,
                                 "extra_instruction": extra_instruction.strip() if extra_instruction else None
                             }
                         else:
@@ -1120,7 +1132,9 @@ IT Operations Team"""
                                         "meta": {
                                             "source": "user_input",
                                             "type": "family" if "family" in summary_type.lower() else "thread",
-                                            "timestamp": datetime.now().isoformat()
+                                            "timestamp": datetime.now().isoformat(),
+                                            "format": summary_format,
+                                            "length": length
                                         }
                                     }
                                 ],
@@ -1135,7 +1149,9 @@ IT Operations Team"""
                                     "meta": {
                                         "source": "user_input",
                                         "type": "family" if "family" in summary_type.lower() else "thread",
-                                        "timestamp": datetime.now().isoformat()
+                                        "timestamp": datetime.now().isoformat(),
+                                        "format": summary_format,
+                                        "length": length
                                     }
                                 }
                             ],

@@ -1,3 +1,36 @@
+# --- Custom mapping node for summarization pipelines ---
+from haystack.core.component import component
+from haystack.dataclasses import Document
+from typing import List, Dict, Any
+
+@component
+class DocumentToTemplateVars:
+    """
+    Custom component to convert Document objects to template variables for PromptBuilder.
+    """
+    
+    def __init__(self):
+        pass
+
+    @component.output_types(template_variables=Dict[str, Any])
+    def run(self, documents: List[Document]) -> Dict[str, Any]:
+        """Convert haystack Documents to template variables format for PromptBuilder"""
+        print(f"[DEBUG] DocumentToTemplateVars: Input docs count: {len(documents)}")
+        
+        # Format all documents as a single text string
+        documents_text = ""
+        for doc in documents:
+            content = doc.content.strip()
+            documents_text += content + "\n"
+        documents_text = documents_text.strip()
+        
+        print(f"[DEBUG] DocumentToTemplateVars: Formatted text: {documents_text[:50]}...")
+        
+        # Return the template variables directly (not nested)
+        result = {"template_variables": {"documents": documents_text}}
+        print(f"[DEBUG] DocumentToTemplateVars: Returning: {result}")
+        return result
+
 import json
 import os
 import yaml
@@ -7,10 +40,10 @@ from dataclasses import dataclass
 
 # Haystack 2.x imports 
 #from haystack import Pipeline, Document
-from haystack import Pipeline
+from haystack import Pipeline, component
 from haystack.dataclasses import Document
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
-from haystack.components.retrievers import InMemoryBM25Retriever 
+from haystack.components.retrievers import InMemoryBM25Retriever
 # OpenSearch imports for production document indexing
 try:
     from haystack_integrations.document_stores.opensearch import OpenSearchDocumentStore
@@ -113,27 +146,45 @@ class EnhancedEmailSummarizerNode:
             length_instruction = "Make the summary moderately detailed (3-5 sentences or 4-6 bullets, about 80 words)."
 
         if self.task_type == "single_document":
-            return f"Summarize the following text.\nText: {{text}}\n{format_instruction}\n{length_instruction}"
+            return (
+                f"STRICTLY SUMMARIZE THE TEXT BELOW. DO NOT ADD ANY INFORMATION.\n"
+                f"Requirements:\n"
+                f"- ONLY use facts that appear in the provided text\n"
+                f"- DO NOT mention documents, attachments, or IDs unless explicitly stated in the text\n"
+                f"- DO NOT invent percentages, numbers, or details\n"
+                f"- DO NOT add recommendations or analysis not in the text\n"
+                f"- DO NOT create fake document IDs or reference non-existent attachments\n"
+                f"{format_instruction}\n{length_instruction}\n"
+                f"Documents to summarize: {{documents}}\n"
+                f"Summary:"
+            )
         elif self.task_type == "family_summarization":
             return (
-                "You are an expert email analyst. Summarize the following email and its attachments as a cohesive unit.\n"
-                "Email and Attachments: {{documents}}\n"
-                "Your summary must:\n"
-                "- Clearly summarize the main email content.\n"
-                "- Incorporate and highlight key information from all attachments.\n"
-                "- Identify relationships between the email and its attachments.\n"
-                "- Note any important decisions, action items, or discrepancies.\n"
-                f"{format_instruction}\n{length_instruction}"
+                f"STRICTLY SUMMARIZE THE EMAIL AND ATTACHMENTS BELOW. DO NOT ADD ANY INFORMATION.\n"
+                f"Requirements:\n"
+                f"- ONLY use facts that appear in the provided email and attachments\n"
+                f"- DO NOT mention documents, attachments, or IDs unless explicitly stated\n"
+                f"- DO NOT invent percentages, numbers, or details\n"
+                f"- DO NOT add recommendations or analysis not in the text\n"
+                f"- DO NOT create fake document IDs or reference non-existent attachments\n"
+                f"- Summarize the main email content and incorporate key information from attachments\n"
+                f"{format_instruction}\n{length_instruction}\n"
+                f"Email and Attachments: {{documents}}\n"
+                f"Summary:"
             )
         elif self.task_type == "thread_summarization":
             return (
-                "You are an expert email analyst. Summarize the following email thread in chronological order.\n"
-                "Thread: {{documents}}\n"
-                "Your summary must:\n"
-                "- Clearly show the sequence and flow of the conversation.\n"
-                "- Identify key participants and their roles.\n"
-                "- Track decisions, unresolved issues, and the current status.\n"
-                f"{format_instruction}\n{length_instruction}"
+                f"STRICTLY SUMMARIZE THE EMAIL THREAD BELOW. DO NOT ADD ANY INFORMATION.\n"
+                f"Requirements:\n"
+                f"- ONLY use facts that appear in the provided email thread\n"
+                f"- DO NOT mention documents, attachments, or IDs unless explicitly stated\n"
+                f"- DO NOT invent percentages, numbers, or details\n"
+                f"- DO NOT add recommendations or analysis not in the text\n"
+                f"- DO NOT create fake document IDs or reference non-existent attachments\n"
+                f"- Show the sequence and flow of the conversation\n"
+                f"{format_instruction}\n{length_instruction}\n"
+                f"Thread: {{documents}}\n"
+                f"Summary:"
             )
         else:
             raise ValueError(f"Unsupported task type: {self.task_type}")
@@ -440,10 +491,15 @@ class HaystackRestAPIManager:
         errors = []
         # Summarization pipeline
         try:
+            print("DEBUG: Attempting to create summarization pipeline...")
             self.pipelines["summarization"] = self._create_summarization_pipeline()
             logger.info("summarization pipeline initialized successfully")
+            print("DEBUG: ✅ summarization pipeline created successfully")
         except Exception as e:
             logger.error(f"Failed to initialize summarization pipeline: {e}")
+            print(f"DEBUG: ❌ summarization pipeline failed: {e}")
+            import traceback
+            traceback.print_exc()
             errors.append(f"summarization: {e}")
         # Family summarization pipeline
         try:
@@ -784,17 +840,17 @@ Answer:"""
         """Create single document summarization pipeline - OPTIMIZED FOR EMAILS"""
         summarizer_node = EnhancedEmailSummarizerNode(
             model_config=self.model_config,
-            task_type="single_document"
+            task_type="single_document",  # Fix: Match the task type expected in _get_prompt_template
+            summary_format="paragraph",
+            summary_length="medium"
         )
         pipeline = Pipeline()
-        
         # Smart document cleaner for emails
         cleaner = DocumentCleaner(
             remove_empty_lines=True,
             remove_extra_whitespaces=True,
             remove_repeated_substrings=False  # Keep email headers and patterns
         )
-        
         # Smart splitter that handles large emails intelligently
         # Only split if document is very large (>3000 chars) to avoid truncation
         splitter = DocumentSplitter(
@@ -803,19 +859,52 @@ Answer:"""
             split_overlap=500   # More overlap to maintain context
         )
         
+        # Create a custom prompt template that works directly with documents
+        from haystack.components.builders.prompt_builder import PromptBuilder
+        custom_prompt = PromptBuilder(
+            template="""STRICTLY SUMMARIZE THE TEXT BELOW. DO NOT ADD ANY INFORMATION.
+Requirements:
+- ONLY use facts that appear in the provided text
+- DO NOT mention documents, attachments, or IDs unless explicitly stated in the text
+- DO NOT invent percentages, numbers, or details
+- DO NOT add recommendations or analysis not in the text
+- DO NOT create fake document IDs or reference non-existent attachments
+
+{% if format == "bulleted" %}
+Return only a bulleted list of the main points. Use a dash (-) at the start of each bullet.
+Do not include any section headers, categories, or extra explanation.
+{% else %}
+Return the summary as a concise paragraph.
+{% endif %}
+
+{% if length == "short" %}
+Make the summary very brief (1-2 sentences or 2-3 bullets, max 40 words).
+{% elif length == "long" %}
+Make the summary detailed and comprehensive (at least 6-8 sentences or 8+ bullets, 150+ words).
+{% else %}
+Make the summary moderately detailed (3-5 sentences or 4-6 bullets, about 80 words).
+{% endif %}
+
+{% for document in documents %}
+{{ document.content }}
+{% endfor %}
+
+Summary:""",
+            required_variables=["documents", "format", "length"]  # Add format and length as variables
+        )
+        
         pipeline.add_component("cleaner", cleaner)
         pipeline.add_component("splitter", splitter)
-        pipeline.add_component("prompt_builder", summarizer_node.to_components()["prompt_builder"])
+        pipeline.add_component("prompt_builder", custom_prompt)
         pipeline.add_component("generator", summarizer_node.to_components()["generator"])
-
-        # Connect with splitting for large emails
+        
         pipeline.connect("cleaner.documents", "splitter.documents")
         pipeline.connect("splitter.documents", "prompt_builder.documents")
         pipeline.connect("prompt_builder.prompt", "generator.prompt")
         return pipeline
 
     def _create_family_summarization_pipeline(self) -> Pipeline:
-        """Create family summarization pipeline"""
+        """Create family summarization pipeline WITH RETRIEVAL"""
         # Default to paragraph/medium, will be overridden at runtime if meta is set
         family_summarizer_node = EnhancedEmailSummarizerNode(
             model_config=self.model_config,
@@ -824,14 +913,39 @@ Answer:"""
             summary_length="medium"
         )
         pipeline = Pipeline()
+        
+        # Add retriever component to get documents from index
+        if self.use_opensearch:
+            retriever = OpenSearchBM25Retriever(
+                document_store=self.document_store,
+                top_k=15,  # Get more documents for family summarization
+                filter_policy="merge"
+            )
+            print(f"DEBUG: Created OpenSearch family summarization retriever with top_k=15")
+        else:
+            retriever = InMemoryBM25Retriever(
+                document_store=self.document_store,
+                top_k=15  # Get more documents for family summarization
+            )
+            print("DEBUG: Created InMemory family summarization retriever with top_k=15")
+        
         cleaner = DocumentCleaner()
         splitter = DocumentSplitter(split_by="word", split_length=3000, split_overlap=300)
+        
+        # Add all components
+        pipeline.add_component("retriever", retriever)
         pipeline.add_component("cleaner", cleaner)
         pipeline.add_component("splitter", splitter)
         pipeline.add_component("prompt_builder", family_summarizer_node.to_components()["prompt_builder"])
         pipeline.add_component("generator", family_summarizer_node.to_components()["generator"])
+        doc_to_template_vars = DocumentToTemplateVars()
+        pipeline.add_component("doc_to_template_vars", doc_to_template_vars)
+        
+        # Connect with retrieval: retriever → cleaner → splitter → doc_to_template_vars → prompt_builder → generator
+        pipeline.connect("retriever.documents", "cleaner.documents")
         pipeline.connect("cleaner.documents", "splitter.documents")
-        pipeline.connect("splitter.documents", "prompt_builder.documents")
+        pipeline.connect("splitter.documents", "doc_to_template_vars.documents")
+        pipeline.connect("doc_to_template_vars.template_variables", "prompt_builder.template_variables")
         pipeline.connect("prompt_builder.prompt", "generator.prompt")
         return pipeline
 
@@ -850,8 +964,11 @@ Answer:"""
         pipeline.add_component("splitter", splitter)
         pipeline.add_component("prompt_builder", thread_summarizer_node.to_components()["prompt_builder"])
         pipeline.add_component("generator", thread_summarizer_node.to_components()["generator"])
+        doc_to_template_vars = DocumentToTemplateVars()
+        pipeline.add_component("doc_to_template_vars", doc_to_template_vars)
         pipeline.connect("cleaner.documents", "splitter.documents")
-        pipeline.connect("splitter.documents", "prompt_builder.documents")
+        pipeline.connect("splitter.documents", "doc_to_template_vars.documents")
+        pipeline.connect("doc_to_template_vars.template_variables", "prompt_builder.template_variables")
         pipeline.connect("prompt_builder.prompt", "generator.prompt")
         return pipeline
 
@@ -875,8 +992,7 @@ Answer:"""
         else:
             retriever = InMemoryBM25Retriever(
                 document_store=self.document_store,
-                top_k=15,  # Retrieve more documents for better coverage
-                filter_policy="merge"  # Ensure filters are properly applied
+                top_k=15  # Retrieve more documents for better coverage
             )
             print("DEBUG: Created InMemory retriever with top_k=15")
         
@@ -907,8 +1023,7 @@ Answer:"""
         else:
             retriever = InMemoryBM25Retriever(
                 document_store=self.document_store,
-                top_k=20,  # More documents for comprehensive family analysis
-                filter_policy="merge"
+                top_k=20  # More documents for comprehensive family analysis
             )
             print("DEBUG: Created InMemory family QA retriever with top_k=20")
         

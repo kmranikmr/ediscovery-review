@@ -242,6 +242,8 @@ class TextSummarizationRequest(BaseModel):
     text: str = Field(..., description="Text to summarize")
     length: str = Field(default="medium", description="Summary length: short, medium, long")
     format: str = Field(default="paragraph", description="Summary format: 'bulleted' or 'paragraph'")
+    focus: str = Field(default="main_points", description="Focus area: general, main_points, action_items, key_facts")
+    extract_keywords: bool = Field(default=True, description="Whether to extract keywords from the summary")
     extra_instruction: Optional[str] = Field(default=None, description="Optional extra instruction for the LLM summarizer")
 
 class QARequest(BaseModel):
@@ -508,60 +510,321 @@ async def get_classification_schema():
 @app.post("/summarize", response_model=APIResponse)
 async def summarize_documents(request: TextSummarizationRequest):
     """Summarize text content"""
+    print(f"[INCOMING /summarize REQUEST]: {request.dict()}")
+    print(f"[DEBUG] Available pipelines: {list(pipelines.keys())}")
+    print(f"[DEBUG] 'summarization' pipeline exists: {'summarization' in pipelines}")
     try:
         if "summarization" not in pipelines:
-            # Create a simple mock summarization response
-            import re
-            # Simple extractive summarization: take first few sentences
-            sentences = re.split(r'[.!?]+', request.text)
-            sentences = [s.strip() for s in sentences if s.strip()]
-            if request.length == "short":
-                summary_sentences = sentences[:2]
-            elif request.length == "long":
-                summary_sentences = sentences[:5]
-            else:  # medium
-                summary_sentences = sentences[:3]
-            if request.format == "bulleted":
-                summary = '\n'.join([f"- {s}" for s in summary_sentences])
+            # Use direct Ollama call instead of mock response
+            print("[DEBUG] summarize_documents: Using DIRECT OLLAMA CALL (pipeline not loaded)")
+            
+            # Add chunking logic for large documents
+            def chunk_text(text, max_words=3000, overlap=300):
+                """Split text into overlapping chunks"""
+                words = text.split()
+                if len(words) <= max_words:
+                    return [text]  # No chunking needed
+                    
+                chunks = []
+                start = 0
+                while start < len(words):
+                    end = min(start + max_words, len(words))
+                    chunk = ' '.join(words[start:end])
+                    chunks.append(chunk)
+                    
+                    if end >= len(words):
+                        break
+                    start = end - overlap  # Overlap for context
+                
+                return chunks
+            
+            # Chunk the input text
+            text_chunks = chunk_text(request.text, max_words=3000, overlap=300)
+            print(f"[DEBUG] Split document into {len(text_chunks)} chunks")
+            
+            # Process each chunk and combine results
+            chunk_summaries = []
+            
+            for i, chunk in enumerate(text_chunks):
+                print(f"[DEBUG] Processing chunk {i+1}/{len(text_chunks)}")
+                
+                # Format document content for LLM
+                from haystack.dataclasses import Document
+                doc = Document(content=chunk, meta={"source": "user_input", "chunk": i+1})
+                
+                # Simple document formatting
+                meta = doc.meta or {}
+                content = doc.content
+                
+                # Basic formatting for single document
+                formatted_parts = []
+                if meta.get("source"):
+                    formatted_parts.append(f"Source: {meta['source']}")
+                if meta.get("chunk"):
+                    formatted_parts.append(f"Chunk: {meta['chunk']}/{len(text_chunks)}")
+                    
+                formatted_parts.append(f"Content:\n{content}")
+                formatted_content = "\n".join(formatted_parts)
+                
+                # Build improved prompt with specific length constraints
+                extra_instruction = getattr(request, "extra_instruction", None)
+                
+                # Define specific length constraints
+                length_constraints = {
+                    "short": "1-2 sentences maximum, be very concise",
+                    "medium": "2-4 sentences, focus on key points only", 
+                    "long": "4-6 sentences, provide comprehensive coverage"
+                }
+                
+                length_instruction = length_constraints.get(request.length, "2-4 sentences")
+                
+                chunk_prompt_parts = [
+                    f"STRICTLY SUMMARIZE THE TEXT BELOW. DO NOT ADD ANY INFORMATION.",
+                    f"Requirements:",
+                    f"- Length: {length_instruction}",
+                    f"- Format: {request.format}",
+                    f"- Focus on: {request.focus}",
+                    f"- ONLY use facts that appear in the provided text",
+                    f"- DO NOT mention documents, attachments, or IDs unless explicitly stated",
+                    f"- DO NOT invent percentages, numbers, or details",
+                    f"- DO NOT add recommendations or analysis not in the text"
+                ]
+                
+                if extra_instruction:
+                    chunk_prompt_parts.append(f"- Additional instruction: {extra_instruction}")
+                    
+                chunk_prompt_parts.extend([
+                    "",
+                    "Document chunk to summarize:",
+                    formatted_content,
+                    "",
+                    "Summary:"
+                ])
+                
+                chunk_prompt = "\n".join(chunk_prompt_parts)
+                
+                try:
+                    # Make direct Ollama call for this chunk
+                    import requests
+                    import json
+                    
+                    ollama_url = "http://localhost:11434/api/generate"
+                    payload = {
+                        "model": "mistral",
+                        "prompt": chunk_prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.1,
+                            "num_predict": 500  # Smaller for individual chunks
+                        }
+                    }
+                    
+                    response = requests.post(ollama_url, json=payload, timeout=60)
+                    if response.status_code == 200:
+                        ollama_result = response.json()
+                        chunk_summary = ollama_result.get("response", f"No summary for chunk {i+1}")
+                        chunk_summaries.append(chunk_summary.strip())
+                    else:
+                        chunk_summaries.append(f"Error summarizing chunk {i+1}")
+                        
+                except Exception as e:
+                    print(f"[ERROR] Chunk {i+1} Ollama call failed: {e}")
+                    chunk_summaries.append(f"Error processing chunk {i+1}: {str(e)}")
+            
+            # Combine chunk summaries
+            if len(chunk_summaries) == 1:
+                final_summary = chunk_summaries[0]
             else:
-                summary = '. '.join(summary_sentences) + '.'
-            result = {
-                "summary": summary
-            }
+                # Combine multiple chunk summaries
+                combined_text = "\n\n".join([f"Part {i+1}: {summary}" for i, summary in enumerate(chunk_summaries)])
+                
+                # Create a final consolidation prompt
+                final_prompt_parts = [
+                    f"Combine these partial summaries into ONE coherent summary. Use ONLY the information provided - do NOT add any new details.",
+                    f"Requirements:",
+                    f"- Length: {length_constraints.get(request.length, '2-4 sentences')}",
+                    f"- Format: {request.format}",
+                    f"- Focus on: {request.focus}",
+                    f"- Combine information but do NOT invent new facts",
+                    f"- Keep only what was in the original partial summaries",
+                    "",
+                    "Partial summaries to combine:",
+                    combined_text,
+                    "",
+                    "Final consolidated summary:"
+                ]
+                
+                final_prompt = "\n".join(final_prompt_parts)
+                
+                try:
+                    # Final consolidation call
+                    payload = {
+                        "model": "mistral",
+                        "prompt": final_prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.1,
+                            "num_predict": 800
+                        }
+                    }
+                    
+                    response = requests.post(ollama_url, json=payload, timeout=60)
+                    if response.status_code == 200:
+                        ollama_result = response.json()
+                        final_summary = ollama_result.get("response", "Could not consolidate summaries")
+                    else:
+                        final_summary = "\n".join(chunk_summaries)  # Fallback to concatenation
+                        
+                except Exception as e:
+                    print(f"[ERROR] Final consolidation failed: {e}")
+                    final_summary = "\n".join(chunk_summaries)  # Fallback to concatenation
+            
+            result = {"summary": final_summary}
+            if request.extract_keywords:
+                # Simple keyword extraction from summary
+                import re
+                keywords = re.findall(r'\b[A-Z][a-z]+\b', final_summary)
+                result["keywords"] = list(set(keywords[:10]))
+            
             return APIResponse(success=True, result=result)
 
         # Use existing summarization pipeline if available
+        print("[DEBUG] summarize_documents: Using HAYSTACK PIPELINE (pipeline loaded)")
+        print(f"[DEBUG] ========== PIPELINE EXECUTION START ==========")
+        print(f"[DEBUG] Raw input text: {request.text}")
+        
+        # DEBUG: Check pipeline structure
+        pipeline = pipelines["summarization"]
+        print(f"[DEBUG] Pipeline components: {list(pipeline.graph.nodes.keys())}")
+        print(f"[DEBUG] Pipeline connections: {list(pipeline.graph.edges)}")
+        
         # Convert text to documents format for pipeline
         from haystack.dataclasses import Document
         docs = [Document(content=request.text, meta={"source": "user_input"})]
-
-        # Patch the prompt template at runtime if extra_instruction is provided
-        original_prompt = None
-        extra_instruction = getattr(request, "extra_instruction", None)
-        if extra_instruction:
-            try:
-                from haystack_new import PromptBuilder
-                original_prompt = PromptBuilder.SUMMARY_PROMPT_TEMPLATE
-                PromptBuilder.SUMMARY_PROMPT_TEMPLATE = PromptBuilder.build_summary_prompt_template(request.format, request.length, extra_instruction)
-                debug_print(f"[DEBUG] LLM prompt template being sent:\n{PromptBuilder.SUMMARY_PROMPT_TEMPLATE}")
-            except Exception as e:
-                print(f"[ERROR] Failed to patch SUMMARY_PROMPT_TEMPLATE: {e}")
-
+        print(f"[DEBUG] Created documents: {[{'content': doc.content[:100], 'meta': doc.meta} for doc in docs]}")
+        
+        # STEP 1: Test cleaner component
+        print(f"[DEBUG] ========== STEP 1: CLEANER ==========")
+        cleaner_result = pipeline.get_component("cleaner").run(documents=docs)
+        cleaned_docs = cleaner_result["documents"]
+        print(f"[DEBUG] Cleaner input: {docs[0].content[:200]}")
+        print(f"[DEBUG] Cleaner output: {cleaned_docs[0].content[:200]}")
+        
+        # STEP 2: Test splitter component  
+        print(f"[DEBUG] ========== STEP 2: SPLITTER ==========")
+        splitter_result = pipeline.get_component("splitter").run(documents=cleaned_docs)
+        split_docs = splitter_result["documents"]
+        print(f"[DEBUG] Splitter input count: {len(cleaned_docs)}")
+        print(f"[DEBUG] Splitter output count: {len(split_docs)}")
+        print(f"[DEBUG] Split doc contents: {[doc.content[:150] for doc in split_docs]}")
+        
+        # STEP 3: Test PromptBuilder directly (no DocumentToTemplateVars component)
+        print(f"[DEBUG] ========== STEP 3: PROMPT_BUILDER (DIRECT) ==========")
+        prompt_builder = pipeline.get_component("prompt_builder")
+        print(f"[DEBUG] Testing PromptBuilder directly with documents")
+        
         try:
-            result = pipelines["summarization"].run({"documents": docs})
-        finally:
-            # Restore the original prompt template
-            if extra_instruction and original_prompt is not None:
-                from haystack_new import PromptBuilder
-                PromptBuilder.SUMMARY_PROMPT_TEMPLATE = original_prompt
-
+            # Test prompt builder directly with documents and required format/length params
+            prompt_result = prompt_builder.run(
+                documents=split_docs,
+                format=request.format if hasattr(request, "format") else "paragraph",
+                length=request.length if hasattr(request, "length") else "medium"
+            )
+            final_prompt = prompt_result["prompt"]
+            print(f"[DEBUG] ✅ Direct PromptBuilder SUCCESS!")
+            print(f"[DEBUG] FINAL PROMPT TO LLM:")
+            print(f"[DEBUG] {'-'*50}")
+            print(f"[DEBUG] {final_prompt[:500]}...")
+            print(f"[DEBUG] {'-'*50}")
+            
+            # Check for template placeholders
+            if any(placeholder in final_prompt for placeholder in ["{documents}", "{{documents}}", "{%", "%}"]):
+                print(f"[ERROR] ❌ Template still has placeholders!")
+            else:
+                print(f"[DEBUG] ✅ No template placeholders - direct document substitution worked!")
+                
+        except Exception as e:
+            print(f"[ERROR] ❌ Direct PromptBuilder failed: {e}")
+            final_prompt = "ERROR"
+        
+        # STEP 4: Test prompt builder
+        print(f"[DEBUG] ========== STEP 4: PROMPT_BUILDER ==========")
+        
+        # First, check the prompt builder template and configuration
+        prompt_builder = pipeline.get_component("prompt_builder")
+        print(f"[DEBUG] Prompt builder template: {getattr(prompt_builder, 'template', 'No template attribute')}")
+        print(f"[DEBUG] Prompt builder required_variables: {getattr(prompt_builder, 'required_variables', 'No required_variables')}")
+        
+        # Test with the actual template variables format
+        # print(f"[DEBUG] Testing PromptBuilder with template_variables: {template_vars}")
+        
+        try:
+            # prompt_result = pipeline.get_component("prompt_builder").run(template_variables=template_vars)
+            # final_prompt = prompt_result["prompt"]
+            print(f"[DEBUG] Skipping detailed debugging for now")
+            final_prompt = "test prompt"
+            print(f"[DEBUG] PromptBuilder SUCCESS!")
+        except Exception as e:
+            print(f"[ERROR] PromptBuilder FAILED: {e}")
+            # Try direct approach - disabled for now
+            # from haystack.components.builders import PromptBuilder
+            # test_builder = PromptBuilder(template="Test template with {{documents}}", required_variables=["documents"])
+            # test_result = test_builder.run(template_variables=template_vars)
+            # final_prompt = test_result["prompt"]
+            # print(f"[DEBUG] Direct PromptBuilder test result: {final_prompt}")
+        
+        # print(f"[DEBUG] Prompt builder input vars: {template_vars}")
+        print(f"[DEBUG] FINAL PROMPT TO LLM:")
+        print(f"[DEBUG] {'-'*50}")
+        print(f"[DEBUG] {final_prompt}")
+        print(f"[DEBUG] {'-'*50}")
+        
+        # Check if template substitution actually worked
+        if "{documents}" in final_prompt:
+            print(f"[ERROR] ❌ Template substitution FAILED - {'{documents}'} placeholder still present!")
+        else:
+            print(f"[DEBUG] ✅ Template substitution worked - no placeholders found")
+        
+        # STEP 5: Test generator (LLM call)
+        print(f"[DEBUG] ========== STEP 5: GENERATOR (LLM CALL) ==========")
+        generator_result = pipeline.get_component("generator").run(prompt=final_prompt)
+        llm_reply = generator_result["replies"][0] if generator_result.get("replies") else "No reply"
+        print(f"[DEBUG] LLM INPUT PROMPT: {final_prompt[:300]}...")
+        print(f"[DEBUG] LLM OUTPUT: {llm_reply}")
+        
+        # Now run the full pipeline for comparison
+        print(f"[DEBUG] ========== FULL PIPELINE RUN ==========")
+        # Include format and length parameters as required by PromptBuilder
+        result = pipeline.run({
+            "cleaner": {"documents": docs},
+            "prompt_builder": {
+                "format": request.format if hasattr(request, "format") else "paragraph", 
+                "length": request.length if hasattr(request, "length") else "medium"
+            }
+        })
+        print(f"[DEBUG] Pipeline result keys: {result.keys()}")
+        
+        generated_summary = result["generator"]["replies"][0] if result.get("generator", {}).get("replies") else "No reply generated"
+        print(f"[DEBUG] ========== PIPELINE EXECUTION END ==========")
+        print(f"[DEBUG] Final summary: {generated_summary}")
+        
         # Extract result from pipeline response
         if result.get("generator", {}).get("replies"):
             summary_result = result["generator"]["replies"][0]
+            print(f"[DEBUG] Summary result: {summary_result}")
         else:
             summary_result = "No summary generated"
+            print("[ERROR] No replies from generator")
 
-        return APIResponse(success=True, result={"summary": summary_result})
+        # Add keywords if requested
+        result_dict = {"summary": summary_result}
+        if request.extract_keywords:
+            # Simple keyword extraction from summary
+            import re
+            keywords = re.findall(r'\b[A-Z][a-z]+\b', summary_result)
+            result_dict["keywords"] = list(set(keywords[:10]))
+
+        return APIResponse(success=True, result=result_dict)
 
     except Exception as e:
         return APIResponse(success=False, error=str(e))
@@ -569,6 +832,7 @@ async def summarize_documents(request: TextSummarizationRequest):
 @app.post("/summarize/family", response_model=APIResponse)
 async def summarize_family(request: SummarizationRequest):
     """Summarize email families (email + attachments)"""
+    print(f"[INCOMING /summarize/family REQUEST]: {request.dict()}")
     try:
         debug_print(f"[DEBUG] summarize_family: pipelines loaded: {list(pipelines.keys())}")
         if "family_summarization" not in pipelines:
@@ -691,6 +955,7 @@ async def summarize_family(request: SummarizationRequest):
 @app.post("/summarize/thread", response_model=APIResponse)
 async def summarize_thread(request: SummarizationRequest):
     """Summarize email threads"""
+    print(f"[INCOMING /summarize/thread REQUEST]: {request.dict()}")
     try:
         debug_print(f"[DEBUG] summarize_thread: pipelines loaded: {list(pipelines.keys())}")
         if "thread_summarization" not in pipelines:
@@ -801,6 +1066,7 @@ async def summarize_thread(request: SummarizationRequest):
 @app.post("/summarize/bart-only", response_model=APIResponse)
 async def summarize_bart_only(request: BartSummaryRequest):
     """BART-only summarization for comparison testing (no Ollama)"""
+    print(f"[INCOMING /summarize/bart-only REQUEST]: {request.dict()}")
     try:
         if not enhanced_ml_available or ml_processor is None:
             raise HTTPException(

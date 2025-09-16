@@ -10,6 +10,9 @@ components:
       remove_substrings: null
       unicode_normalization: null
     type: haystack.components.preprocessors.document_cleaner.DocumentCleaner
+  doc_to_template_vars:
+    init_parameters: {}
+    type: haystack_new.DocumentToTemplateVars
   generator:
     init_parameters:
       generation_kwargs:
@@ -28,23 +31,30 @@ components:
     init_parameters:
       required_variables:
       - documents
-      template: 'You are an expert email analyst. Summarize the following email thread
-        in chronological order.
+      template: 'STRICTLY SUMMARIZE THE EMAIL THREAD BELOW. DO NOT ADD ANY INFORMATION.
 
-        Thread: {{documents}}
+        Requirements:
 
-        Your summary must:
+        - ONLY use facts that appear in the provided email thread
 
-        - Clearly show the sequence and flow of the conversation.
+        - DO NOT mention documents, attachments, or IDs unless explicitly stated
 
-        - Identify key participants and their roles.
+        - DO NOT invent percentages, numbers, or details
 
-        - Track decisions, unresolved issues, and the current status.
+        - DO NOT add recommendations or analysis not in the text
+
+        - DO NOT create fake document IDs or reference non-existent attachments
+
+        - Show the sequence and flow of the conversation
 
         Return the summary as a concise paragraph.
 
         Make the summary moderately detailed (3-5 sentences or 4-6 bullets, about
-        80 words).'
+        80 words).
+
+        Thread: {documents}
+
+        Summary:'
       variables: null
     type: haystack.components.builders.prompt_builder.PromptBuilder
   splitter:
@@ -62,9 +72,11 @@ connection_type_validation: true
 connections:
 - receiver: splitter.documents
   sender: cleaner.documents
-- receiver: prompt_builder.documents
+- receiver: doc_to_template_vars.documents
   sender: splitter.documents
 - receiver: generator.prompt
   sender: prompt_builder.prompt
+- receiver: prompt_builder.template_variables
+  sender: doc_to_template_vars.template_variables
 max_runs_per_component: 100
 metadata: {}
