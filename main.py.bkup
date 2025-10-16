@@ -27,8 +27,21 @@ from haystack import Pipeline
 from haystack.dataclasses import Document
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 
-# Import shared configuration
-from config import DEBUG_MODE, LLM_PROVIDER, LLM_MODEL_NAME, LLM_BASE_URL, LLM_TEMPERATURE, LLM_MAX_TOKENS, OLLAMA_API_BASE, OLLAMA_MODEL
+# Import attribute classification models
+try:
+    from attribute_classification_models import (
+        AttributeClassificationRequest, 
+        AttributeClassificationResponse,
+        AttributeClassificationResult,
+        AttributeSourceText
+    )
+    attribute_classification_available = True
+except ImportError:
+    attribute_classification_available = False
+    print("Attribute classification models not available")
+
+# Debug mode configuration
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 def debug_print(*args, **kwargs):
     """Print debug information only when DEBUG_MODE is enabled"""
@@ -144,14 +157,13 @@ async def lifespan(app: FastAPI):
         
         # Check for Docker environment settings
         skip_opensearch = os.getenv("SKIP_OPENSEARCH", "false").lower() == "true"
-        
-        # Use configuration from config.py
-        model_type = LLM_PROVIDER
-        model_name = LLM_MODEL_NAME
-        base_url = LLM_BASE_URL
+        # Modular LLM provider selection
+        model_type = os.getenv("LLM_PROVIDER", "ollama")  # 'ollama', 'openai', 'huggingface'
+        model_name = os.getenv("LLM_MODEL_NAME", "mistral")
+        base_url = os.getenv("LLM_BASE_URL", None)
         api_key = os.getenv("OPENAI_API_KEY", None)
-        temperature = LLM_TEMPERATURE
-        max_tokens = LLM_MAX_TOKENS
+        temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+        max_tokens = int(os.getenv("LLM_MAX_TOKENS", "1000"))
 
         print(f"  - LLM Provider: {model_type}")
         print(f"  - Model Name: {model_name}")
@@ -434,9 +446,8 @@ async def root():
             "qa": "/qa",
             "family_qa": "/qa/family",
             "classification": "/classify",
+            "attribute_classification": "/attribute-classify",
             "bart_classification": "/classify/bart-only",
-            "attribute_classification": "/classification/attributes",
-            "structured_classification": "/classification/structured",
             "ner_extraction": "/ner/extract",
             "ner_file_extraction": "/ner/extract-from-file",
             "indexing": "/index",
@@ -2751,6 +2762,235 @@ async def opensearch_query_builder(request: Dict[str, Any]):
     try:
         builder = OpenSearchQueryBuilder()
         
+        # Handle different request types
+        if "example_type" in request:
+            # Return example query of requested type
+            example_type = request["example_type"]
+            example = builder.get_example_query(example_type)
+            return APIResponse(
+                success=True,
+                result=example
+            )
+        elif "validate" in request:
+            # Validate provided query
+            query_to_validate = request["validate"]
+            validation_result = builder.validate_query(query_to_validate)
+            return APIResponse(
+                success=True,
+                result=validation_result
+            )
+        else:
+            # Return overview of available examples
+            examples = builder.get_available_examples()
+            return APIResponse(
+                success=True,
+                result=examples
+            )
+    except Exception as e:
+        return APIResponse(
+            success=False,
+            error=f"Query builder error: {str(e)}"
+        )
+
+# Import attribute classification endpoint
+try:
+    from attribute_classification_endpoint import register_routes, AttributeClassificationRequest
+    # Register the attribute classification routes
+    register_routes(app)
+    print("✅ Attribute classification endpoint registered")
+except ImportError as e:
+    print(f"⚠️ Attribute classification not available: {e}")
+    
+    # Add a stub endpoint
+    @app.post("/attribute-classify", response_model=APIResponse, tags=["Classification"])
+    async def attribute_classify_endpoint_stub(request: Dict[str, Any]):
+        """Stub endpoint for attribute-based classification"""
+        return APIResponse(
+            success=False,
+            error="Attribute classification is not available in this installation"
+        )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Create a function that wraps the imported attribute_classify_document
+    @app.post("/attribute-classify", response_model=APIResponse, tags=["Classification"],
+             summary="Classify document based on attributes",
+             description="Analyze document against provided attributes and return classification results with confidence scores")
+    async def attribute_classify_endpoint(request: AttributeClassificationRequest):
+        """Endpoint for attribute-based classification"""
+        try:
+            # Extract document text
+            document_text = request.document.text
+            doc_id = request.document.doc_id
+            
+            # Extract case context
+            case_name = request.case_context.case_name
+            case_detail = request.case_context.case_detail
+            
+            # Build attributes structure for the prompt
+            attributes_text = []
+            for attr in request.attributes:
+                attr_desc = f"Attribute ID: {attr.attribute_id}\n"
+                attr_desc += f"Name: {attr.name}\n"
+                attr_desc += f"Description: {attr.description}\n"
+                attr_desc += f"Type: {attr.attribute_type}\n"
+                attr_desc += f"Required: {attr.is_required}\n"
+                attr_desc += f"Exclusive: {attr.is_exclusive}\n"
+                attr_desc += f"Allowed Values: {', '.join(attr.allowed_values)}"
+                attributes_text.append(attr_desc)
+            
+            # Format the attributes for the prompt
+            formatted_attributes = "\n\n".join(attributes_text)
+            
+            # Create prompt for classification
+            prompt = f"""
+You are an expert legal document reviewer. You must classify the document based on the provided attributes.
+
+CASE CONTEXT:
+Case Name: {case_name}
+Case Details: {case_detail}
+
+DOCUMENT TO CLASSIFY (ID: {doc_id}):
+{document_text}
+
+ATTRIBUTES TO EVALUATE:
+{formatted_attributes}
+
+INSTRUCTIONS:
+{request.llm_instruction or "Review the provided document in the context of the case. For each attribute, select one allowed value. Provide a confidence score (0–1) and a supporting snippet with character start/end offsets from the document text. Return results as JSON."}
+
+CRITICAL REQUIREMENTS:
+1. For each attribute, choose ONLY values from the provided allowed values list
+2. For each classification, identify the EXACT text snippet that supports your decision
+3. Provide character start/end positions for each snippet relative to the document text
+4. Assign an accurate confidence score between 0.0 and 1.0
+5. If no clear value can be determined, select the most appropriate option and assign a lower confidence score
+
+RESPOND ONLY in this JSON format:
+{{
+  "doc_id": "{doc_id}",
+  "attributes": [
+    {{
+      "attribute_id": <attribute_id>,
+      "name": "<attribute_name>",
+      "value": "<selected_value_from_allowed_values>",
+      "confidence": <confidence_score>,
+      "source": {{
+        "text": "<supporting_text_snippet>",
+        "start": <character_start_position>,
+        "end": <character_end_position>
+      }}
+    }},
+    ...
+  ]
+}}
+
+Ensure that each "value" EXACTLY matches one of the allowed values for that attribute.
+"""
+
+            # Make LLM call
+            try:
+                # Try Ollama first
+                response = requests.post(
+                    "http://localhost:11434/api/generate",
+                    json={
+                        "model": "mistral",
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.1,
+                            "top_p": 0.9,
+                            "num_predict": 2000
+                        }
+                    },
+                    timeout=60  # Longer timeout for complex attribute analysis
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    raw_response = result.get("response", "")
+                    
+                    # Try to parse JSON from response
+                    import json
+                    import re
+                    
+                    # Look for JSON in the response
+                    json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+                    if json_match:
+                        try:
+                            parsed_result = json.loads(json_match.group())
+                            
+                            # Validate parsed result has expected structure
+                            if "doc_id" in parsed_result and "attributes" in parsed_result:
+                                # Process each attribute to ensure it's valid
+                                for attr in parsed_result["attributes"]:
+                                    # Validate required fields
+                                    required_fields = ["attribute_id", "name", "value", "confidence", "source"]
+                                    if not all(field in attr for field in required_fields):
+                                        continue
+                                    
+                                    # Validate source field has text, start and end
+                                    source_fields = ["text", "start", "end"]
+                                    if not all(field in attr["source"] for field in source_fields):
+                                        continue
+                                    
+                                    # Ensure source positions are integers
+                                    attr["source"]["start"] = int(attr["source"]["start"])
+                                    attr["source"]["end"] = int(attr["source"]["end"])
+                                    
+                                    # Ensure confidence is float
+                                    attr["confidence"] = float(attr["confidence"])
+                                
+                                return APIResponse(
+                                    success=True,
+                                    result=parsed_result
+                                )
+                        except json.JSONDecodeError as e:
+                            print(f"JSON parsing failed: {e}")
+                            return APIResponse(
+                                success=False,
+                                error=f"Failed to parse LLM response as JSON: {e}",
+                                result={"raw_response": raw_response}
+                            )
+                    else:
+                        return APIResponse(
+                            success=False,
+                            error="Could not extract JSON from LLM response",
+                            result={"raw_response": raw_response[:1000] + "..." if len(raw_response) > 1000 else raw_response}
+                        )
+                else:
+                    return APIResponse(
+                        success=False,
+                        error=f"LLM request failed with status {response.status_code}",
+                        result={"response": response.text[:1000] + "..." if len(response.text) > 1000 else response.text}
+                    )
+                    
+            except Exception as ollama_error:
+                print(f"Ollama classification failed: {ollama_error}")
+                return APIResponse(
+                    success=False,
+                    error=f"LLM request failed: {str(ollama_error)}",
+                    result=None
+                )
+                
+        except Exception as e:
+            print(f"Attribute classification error: {str(e)}")
+            return APIResponse(
+                success=False,
+                error=f"Attribute classification failed: {str(e)}"
+            )
+else:
+    # Add a stub endpoint that returns an error when attribute classification is not available
+    @app.post("/attribute-classify", response_model=APIResponse, tags=["Classification"],
+             summary="Classify document based on attributes (UNAVAILABLE)",
+             description="This endpoint is unavailable because attribute classification models are not installed")
+    async def attribute_classify_endpoint_stub(request: Dict[str, Any]):
+        """Stub endpoint for attribute-based classification"""
+        return APIResponse(
+            success=False,
+            error="Attribute classification is not available in this installation"
+        )
         query_type = request.get("query_type", "examples")
         
         if query_type == "examples":
@@ -2797,18 +3037,200 @@ async def opensearch_query_builder(request: Dict[str, Any]):
                 success=False,
                 error="Invalid query_type. Use 'examples' or 'validate'"
             )
-    
+            
     except Exception as e:
         return APIResponse(
             success=False,
             error=f"Query builder error: {str(e)}"
         )
 
+# Import attribute classification module
+try:
+    from attribute_classification_endpoint import register_routes, AttributeClassificationRequest
+    # Register the attribute classification routes
+    register_routes(app)
+    print("✅ Attribute classification endpoint registered")
+except ImportError as e:
+    print(f"⚠️ Attribute classification not available: {e}")
+    
+    # Add a stub endpoint that returns an error
+    @app.post("/attribute-classify", response_model=APIResponse, tags=["Classification"],
+             summary="Classify document based on attributes (UNAVAILABLE)",
+             description="This endpoint is unavailable because attribute classification models are not installed")
+    async def attribute_classify_endpoint_stub(request: Dict[str, Any]):
+        """Stub endpoint for attribute-based classification"""
+        return APIResponse(
+            success=False,
+            error="Attribute classification is not available in this installation"
+        )
+
 if __name__ == "__main__":
     import uvicorn
-    
-    # Add the new classification endpoints
-    from classification_endpoints import router as classification_router
-    app.include_router(classification_router)
-    
-    uvicorn.run(app, host="0.0.0.0", port=8001 )
+    uvicorn.run(app, host="0.0.0.0", port=8001)
+async def attribute_classify_endpoint(request: AttributeClassificationRequest):
+    """Endpoint for attribute-based classification"""
+    try:
+        # Extract document text
+        document_text = request.document.text
+        doc_id = request.document.doc_id
+        
+        # Extract case context
+        case_name = request.case_context.case_name
+        case_detail = request.case_context.case_detail
+        
+        # Build attributes structure for the prompt
+        attributes_text = []
+        for attr in request.attributes:
+            attr_desc = f"Attribute ID: {attr.attribute_id}\n"
+            attr_desc += f"Name: {attr.name}\n"
+            attr_desc += f"Description: {attr.description}\n"
+            attr_desc += f"Type: {attr.attribute_type}\n"
+            attr_desc += f"Required: {attr.is_required}\n"
+            attr_desc += f"Exclusive: {attr.is_exclusive}\n"
+            attr_desc += f"Allowed Values: {', '.join(attr.allowed_values)}"
+            attributes_text.append(attr_desc)
+        
+        # Format the attributes for the prompt
+        formatted_attributes = "\n\n".join(attributes_text)
+        
+        # Create prompt for classification
+        prompt = f"""
+You are an expert legal document reviewer. You must classify the document based on the provided attributes.
+
+CASE CONTEXT:
+Case Name: {case_name}
+Case Details: {case_detail}
+
+DOCUMENT TO CLASSIFY (ID: {doc_id}):
+{document_text}
+
+ATTRIBUTES TO EVALUATE:
+{formatted_attributes}
+
+INSTRUCTIONS:
+{request.llm_instruction or "Review the provided document in the context of the case. For each attribute, select one allowed value. Provide a confidence score (0–1) and a supporting snippet with character start/end offsets from the document text. Return results as JSON."}
+
+CRITICAL REQUIREMENTS:
+1. For each attribute, choose ONLY values from the provided allowed values list
+2. For each classification, identify the EXACT text snippet that supports your decision
+3. Provide character start/end positions for each snippet relative to the document text
+4. Assign an accurate confidence score between 0.0 and 1.0
+5. If no clear value can be determined, select the most appropriate option and assign a lower confidence score
+
+RESPOND ONLY in this JSON format:
+{{
+  "doc_id": "{doc_id}",
+  "attributes": [
+    {{
+      "attribute_id": <attribute_id>,
+      "name": "<attribute_name>",
+      "value": "<selected_value_from_allowed_values>",
+      "confidence": <confidence_score>,
+      "source": {{
+        "text": "<supporting_text_snippet>",
+        "start": <character_start_position>,
+        "end": <character_end_position>
+      }}
+    }},
+    ...
+  ]
+}}
+
+Ensure that each "value" EXACTLY matches one of the allowed values for that attribute.
+"""
+
+        # Make LLM call
+        try:
+            # Try Ollama first
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": "mistral",
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "top_p": 0.9,
+                        "num_predict": 2000
+                    }
+                },
+                timeout=60  # Longer timeout for complex attribute analysis
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                raw_response = result.get("response", "")
+                
+                # Try to parse JSON from response
+                import json
+                import re
+                
+                # Look for JSON in the response
+                json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed_result = json.loads(json_match.group())
+                        
+                        # Validate parsed result has expected structure
+                        if "doc_id" in parsed_result and "attributes" in parsed_result:
+                            # Process each attribute to ensure it's valid
+                            for attr in parsed_result["attributes"]:
+                                # Validate required fields
+                                required_fields = ["attribute_id", "name", "value", "confidence", "source"]
+                                if not all(field in attr for field in required_fields):
+                                    continue
+                                
+                                # Validate source field has text, start and end
+                                source_fields = ["text", "start", "end"]
+                                if not all(field in attr["source"] for field in source_fields):
+                                    continue
+                                
+                                # Ensure source positions are integers
+                                attr["source"]["start"] = int(attr["source"]["start"])
+                                attr["source"]["end"] = int(attr["source"]["end"])
+                                
+                                # Ensure confidence is float
+                                attr["confidence"] = float(attr["confidence"])
+                            
+                            return APIResponse(
+                                success=True,
+                                result=parsed_result
+                            )
+                    except json.JSONDecodeError as e:
+                        print(f"JSON parsing failed: {e}")
+                        return APIResponse(
+                            success=False,
+                            error=f"Failed to parse LLM response as JSON: {e}",
+                            result={"raw_response": raw_response}
+                        )
+                else:
+                    return APIResponse(
+                        success=False,
+                        error="Could not extract JSON from LLM response",
+                        result={"raw_response": raw_response[:1000] + "..." if len(raw_response) > 1000 else raw_response}
+                    )
+            else:
+                return APIResponse(
+                    success=False,
+                    error=f"LLM request failed with status {response.status_code}",
+                    result={"response": response.text[:1000] + "..." if len(response.text) > 1000 else response.text}
+                )
+                
+        except Exception as ollama_error:
+            print(f"Ollama classification failed: {ollama_error}")
+            return APIResponse(
+                success=False,
+                error=f"LLM request failed: {str(ollama_error)}",
+                result=None
+            )
+            
+    except Exception as e:
+        print(f"Attribute classification error: {str(e)}")
+        return APIResponse(
+            success=False,
+            error=f"Attribute classification failed: {str(e)}"
+        )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)

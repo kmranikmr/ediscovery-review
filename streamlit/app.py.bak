@@ -29,7 +29,7 @@ def test_api_connection(api_url=None):
     except Exception as e:
         return False
 
-def call_api_endpoint(endpoint: str, data: Dict[str, Any] = None, method: str = "POST", base_url: str = None) -> Dict[str, Any]:
+def call_api_endpoint(endpoint: str, data: Dict[str, Any], method: str = "POST", base_url: str = None) -> Dict[str, Any]:
     """Make API call to specified endpoint - from working implementation"""
     url_base = base_url or API_BASE_URL
     try:
@@ -42,7 +42,7 @@ def call_api_endpoint(endpoint: str, data: Dict[str, Any] = None, method: str = 
         if method == "POST":
             response = requests.post(url, json=data)
         else:
-            response = requests.get(url, params=data if data else None)
+            response = requests.get(url, params=data)
         
         return response.json()
     except Exception as e:
@@ -568,6 +568,530 @@ def qa_and_search_tab(index_name):
 
 # Import the classification_tab function from the separate file
 from classification_tab import classification_tab
+
+# The summarization_tab function is defined below
+    summary_type = st.selectbox(
+        "Summarization Type:",
+        ["Regular (/summarize)", "Family (/summarize/family)", "Thread (/summarize/thread)", "BART-only Summarization"],
+        help="Choose the type of summarization to perform"
+    )
+    
+    # Show endpoint-specific information
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Dynamic instructions based on endpoint
+        if summary_type == "Regular (/summarize)":
+            st.info("📋 **Regular Summarization**: Takes plain text input and generates a standard summary with keywords")
+            default_text = """This is a quarterly business review meeting. The marketing team presented their Q3 results showing a 15% increase in lead generation. The sales team reported closing 25 new deals worth $2.3M total revenue. The engineering team delivered 3 major features ahead of schedule. However, there are concerns about the upcoming Q4 budget constraints and potential staff reductions. The CEO emphasized the need for cost optimization while maintaining growth momentum."""
+            
+        elif summary_type == "Family (/summarize/family)":
+            st.info("👨‍👩‍👧‍👦 **Family Summarization**: Designed for email families (email + attachments as one unit). Takes document format input.")
+            default_text = """{
+  "documents": [
+    {
+      "content": "From: john.smith@company.com\\nTo: team@company.com\\nSubject: Q3 Project Update\\n\\nTeam,\\n\\nAttached is the Q3 project status report. We're currently on track with most deliverables, but there are some concerns with the timeline for the API integration. Please review the attached report and come prepared to discuss mitigation strategies in tomorrow's meeting.\\n\\nRegards,\\nJohn",
+      "meta": {"type": "email", "role": "parent"}
+    },
+    {
+      "content": "# Q3 PROJECT STATUS REPORT\\n\\n## Executive Summary\\nThe project is 85% complete with 3 of 4 major milestones achieved. Budget utilization is at 78%, which is on target. The API integration phase is facing technical challenges that may cause a 2-week delay.\\n\\n## Key Accomplishments\\n- Frontend UI completed and passed QA testing\\n- Database migration successfully implemented\\n- User authentication system enhanced with 2FA\\n\\n## Current Challenges\\n- Third-party API integration showing compatibility issues\\n- Resource constraints in the backend team\\n\\n## Next Steps\\n- Engage with API vendor for technical support\\n- Potentially reassign resources from completed tasks\\n- Prepare contingency plan for launch",
+      "meta": {"type": "document", "role": "attachment"}
+    }
+  ]
+}"""
+            
+        elif summary_type == "Thread (/summarize/thread)":
+            st.info("🧵 **Thread Summarization**: Specialized for email threads with multiple messages. Takes array of messages.")
+            default_text = """{
+  "messages": [
+    {
+      "from": "alice@company.com",
+      "to": ["bob@company.com", "team@company.com"],
+      "subject": "Project Timeline Concerns",
+      "date": "2023-10-01T09:15:00",
+      "content": "I'm concerned about our current timeline for the client deliverable. We're behind on the database migration tasks. Can we discuss options to get back on track?"
+    },
+    {
+      "from": "bob@company.com",
+      "to": ["alice@company.com", "team@company.com"],
+      "subject": "Re: Project Timeline Concerns",
+      "date": "2023-10-01T10:30:00",
+      "content": "I agree this is a concern. We could potentially bring in additional resources from Team B who just completed their project. Let me check their availability."
+    },
+    {
+      "from": "charlie@company.com",
+      "to": ["alice@company.com", "bob@company.com", "team@company.com"],
+      "subject": "Re: Project Timeline Concerns",
+      "date": "2023-10-01T11:45:00",
+      "content": "I've also been monitoring our progress. Another option is to adjust the scope slightly for the initial delivery and complete the remaining features in a follow-up release. The client has been flexible with phased approaches in the past."
+    },
+    {
+      "from": "alice@company.com",
+      "to": ["bob@company.com", "charlie@company.com", "team@company.com"],
+      "subject": "Re: Project Timeline Concerns",
+      "date": "2023-10-01T13:20:00",
+      "content": "Thanks for the suggestions. Let's do both - bring in additional resources where possible and prepare a phased delivery proposal as a backup. Can we meet tomorrow at 10 AM to finalize the approach?"
+    }
+  ]
+}"""
+            
+        else:  # BART-only
+            st.info("🤖 **BART-only Summarization**: Direct neural summarization using BART model. Takes simple text input.")
+            default_text = """In today's board meeting, the CFO presented the Q3 financial results showing a 12% revenue increase year-over-year, exceeding projections by 3%. Operating expenses were up 7% due to the new office expansion and increased headcount. The CTO discussed the progress on Project Alpha, noting that it's on schedule for a Q1 launch next year despite some technical challenges with the payment processing integration. The marketing director presented the holiday season campaign strategy, which will focus on digital channels with a 15% larger budget than last year. The board approved the proposed expansion into the European market, with initial operations to begin in Germany and France by Q2 next year. The meeting concluded with a discussion of potential acquisition targets, with two companies shortlisted for further due diligence."""
+        
+        # Text input based on summary type
+        text_to_summarize = st.text_area(
+            "Enter text to summarize:",
+            value=default_text,
+            height=300,
+            help="Enter the text content you want to summarize"
+        )
+    
+    with col2:
+        st.markdown("#### ⚙️ Options")
+        
+        # Common options for all summarization types
+        max_length = st.slider(
+            "Max Summary Length:",
+            min_value=50,
+            max_value=500,
+            value=200,
+            step=50,
+            help="Maximum length of the generated summary in words"
+        )
+        
+        include_keywords = st.checkbox(
+            "Include Keywords",
+            value=True,
+            help="Extract and include key terms from the text"
+        )
+        
+        # Advanced options in expander
+        with st.expander("🔧 Advanced Options"):
+            # Different options based on summarization type
+            if summary_type == "Regular (/summarize)":
+                format_type = st.selectbox(
+                    "Summary Format:",
+                    ["paragraph", "bullet_points", "structured"],
+                    help="Choose the format of the summary output"
+                )
+                
+                focus_area = st.multiselect(
+                    "Focus Areas:",
+                    ["business_impact", "technical_details", "action_items", "timeline", "risks", "costs"],
+                    default=["business_impact", "action_items"],
+                    help="Areas to emphasize in the summary"
+                )
+                
+            elif summary_type == "Family (/summarize/family)":
+                attachment_mode = st.radio(
+                    "Attachment Handling:",
+                    ["integrated", "separate", "prioritized"],
+                    help="How to handle attachments in the summary"
+                )
+                
+                relationship_emphasis = st.checkbox(
+                    "Emphasize Document Relationships",
+                    value=True,
+                    help="Highlight connections between parent and child documents"
+                )
+                
+            elif summary_type == "Thread (/summarize/thread)":
+                thread_format = st.radio(
+                    "Thread Format:",
+                    ["chronological", "topic_based", "participant_focused"],
+                    help="How to organize the thread summary"
+                )
+                
+                include_participants = st.checkbox(
+                    "Include Participant Summary",
+                    value=True,
+                    help="Include a summary of who participated and their contributions"
+                )
+                
+                extract_decisions = st.checkbox(
+                    "Extract Decisions/Action Items",
+                    value=True,
+                    help="Identify and highlight decisions made and action items assigned"
+                )
+                
+            else:  # BART-only
+                model_size = st.radio(
+                    "Model Size:",
+                    ["base", "large"],
+                    help="Size of the BART model to use (larger = more detailed but slower)"
+                )
+                
+                num_beams = st.slider(
+                    "Beam Search Size:",
+                    min_value=1,
+                    max_value=8,
+                    value=4,
+                    help="Number of beams for beam search (higher = more diverse output)"
+                )
+    
+    # Summarization button
+    if st.button("📝 Generate Summary", type="primary", use_container_width=True):
+        if text_to_summarize.strip():
+            with st.spinner("🔄 Generating summary..."):
+                # Prepare API request based on summary type
+                if summary_type == "Regular (/summarize)":
+                    data = {
+                        "text": text_to_summarize,
+                        "max_length": max_length,
+                        "include_keywords": include_keywords
+                    }
+                    
+                    # Add advanced options if available
+                    if 'format_type' in locals():
+                        data["format"] = format_type
+                    if 'focus_area' in locals() and focus_area:
+                        data["focus_areas"] = focus_area
+                        
+                    endpoint = "/summarize"
+                    
+                elif summary_type == "Family (/summarize/family)":
+                    # Try to parse JSON if it looks like JSON
+                    try:
+                        if text_to_summarize.strip().startswith("{"):
+                            import json
+                            json_data = json.loads(text_to_summarize)
+                            # Use the parsed data directly
+                            data = json_data
+                        else:
+                            # If not JSON, treat as a single document
+                            data = {
+                                "documents": [
+                                    {
+                                        "content": text_to_summarize,
+                                        "meta": {"type": "document", "role": "single"}
+                                    }
+                                ]
+                            }
+                    except:
+                        # If JSON parsing fails, treat as a single document
+                        data = {
+                            "documents": [
+                                {
+                                    "content": text_to_summarize,
+                                    "meta": {"type": "document", "role": "single"}
+                                }
+                            ]
+                        }
+                    
+                    # Add options
+                    data["max_length"] = max_length
+                    data["include_keywords"] = include_keywords
+                    
+                    # Add advanced options if available
+                    if 'attachment_mode' in locals():
+                        data["attachment_mode"] = attachment_mode
+                    if 'relationship_emphasis' in locals():
+                        data["emphasize_relationships"] = relationship_emphasis
+                        
+                    endpoint = "/summarize/family"
+                    
+                elif summary_type == "Thread (/summarize/thread)":
+                    # Try to parse JSON if it looks like JSON
+                    try:
+                        if text_to_summarize.strip().startswith("{"):
+                            import json
+                            json_data = json.loads(text_to_summarize)
+                            # Use the parsed data directly
+                            data = json_data
+                        else:
+                            # If not JSON, treat as a single message
+                            data = {
+                                "messages": [
+                                    {
+                                        "from": "user@example.com",
+                                        "to": ["recipient@example.com"],
+                                        "subject": "Message",
+                                        "date": "2023-01-01T12:00:00",
+                                        "content": text_to_summarize
+                                    }
+                                ]
+                            }
+                    except:
+                        # If JSON parsing fails, treat as a single message
+                        data = {
+                            "messages": [
+                                {
+                                    "from": "user@example.com",
+                                    "to": ["recipient@example.com"],
+                                    "subject": "Message",
+                                    "date": "2023-01-01T12:00:00",
+                                    "content": text_to_summarize
+                                }
+                            ]
+                        }
+                    
+                    # Add options
+                    data["max_length"] = max_length
+                    data["include_keywords"] = include_keywords
+                    
+                    # Add advanced options if available
+                    if 'thread_format' in locals():
+                        data["format"] = thread_format
+                    if 'include_participants' in locals():
+                        data["include_participants"] = include_participants
+                    if 'extract_decisions' in locals():
+                        data["extract_decisions"] = extract_decisions
+                        
+                    endpoint = "/summarize/thread"
+                    
+                else:  # BART-only
+                    data = {
+                        "text": text_to_summarize,
+                        "max_length": max_length
+                    }
+                    
+                    # Add advanced options if available
+                    if 'model_size' in locals():
+                        data["model_size"] = model_size
+                    if 'num_beams' in locals():
+                        data["num_beams"] = num_beams
+                        
+                    endpoint = "/summarize/bart-only"
+                
+                # Call API
+                result = call_api_endpoint(endpoint, data)
+                
+                if result.get("success"):
+                    summary_result = result.get("result", {})
+                    
+                    st.markdown("### 📋 Summary Result")
+                    
+                    # Check if we have a structured or simple result
+                    if isinstance(summary_result, dict):
+                        # Try to get the summary text - different APIs might have different keys
+                        summary_text = None
+                        for key in ["summary", "text", "content"]:
+                            if key in summary_result:
+                                summary_text = summary_result[key]
+                                break
+                        
+                        if summary_text:
+                            st.success(summary_text)
+                        else:
+                            st.warning("No summary text found in the response")
+                        
+                        # Display additional information in columns
+                        col_results1, col_results2 = st.columns(2)
+                        
+                        with col_results1:
+                            # Check for bullet points or key points
+                            points = None
+                            for key in ["bullet_points", "key_points", "highlights"]:
+                                if key in summary_result and isinstance(summary_result[key], list):
+                                    points = summary_result[key]
+                                    break
+                            
+                            if points:
+                                st.markdown("#### 🔑 Key Points")
+                                for point in points:
+                                    st.write(f"• {point}")
+                        
+                        with col_results2:
+                            if isinstance(summary_result, dict) and "keywords" in summary_result and isinstance(summary_result["keywords"], list):
+                                st.markdown("#### 🏷️ Keywords")
+                                st.write(", ".join(summary_result["keywords"]))
+                            
+                            if isinstance(summary_result, dict) and "business_facts" in summary_result:
+                                st.markdown("#### 📊 Business Facts")
+                                facts = summary_result["business_facts"]
+                                if isinstance(facts, dict):
+                                    for key, value in facts.items():
+                                        st.write(f"**{key}:** {value}")
+                        
+                        # Technical information
+                        if isinstance(summary_result, dict):
+                            tech_info = []
+                            if "model_used" in summary_result:
+                                tech_info.append(f"Model: {summary_result['model_used']}")
+                            if "processing_time" in summary_result:
+                                tech_info.append(f"Time: {summary_result['processing_time']:.2f}s")
+                            
+                            if tech_info:
+                                st.info(" | ".join(tech_info))
+                        
+                        # Show full result in expander
+                        with st.expander("🔍 Full API Response"):
+                            st.json(summary_result)
+                    
+                    else:
+                        # Simple string result
+                        st.success(summary_result)
+                else:
+                    st.error(f"❌ Summarization failed: {result.get('error', 'Unknown error')}")
+                    
+                    # Show error details
+                    with st.expander("🐛 Error Details"):
+                        st.json(result)
+        else:
+            st.warning("⚠️ Please enter some text to summarize")
+                        
+                        if has_direct_fields:
+                            # NEW FORMAT: Use direct fields from classification_result
+                            st.markdown("#### 📊 Primary Classification")
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.info(f"**Classification:** {classification_result.get('classification', 'N/A')}")
+                            with col2:
+                                st.info(f"**Confidence:** {classification_result.get('confidence', 'N/A')}")
+                            with col3:
+                                st.info(f"**Method:** {classification_result.get('method', 'N/A')}")
+                            
+                            # eDiscovery Classifications - Direct from API response
+                            st.markdown("#### ⚖️ eDiscovery Classifications")
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                responsiveness = classification_result.get('responsiveness', 'N/A')
+                                if 'responsive' in responsiveness.lower() and 'non-responsive' not in responsiveness.lower():
+                                    st.success(f"**Responsiveness:** {responsiveness}")
+                                elif 'non-responsive' in responsiveness.lower():
+                                    st.error(f"**Responsiveness:** {responsiveness}")
+                                else:
+                                    st.warning(f"**Responsiveness:** {responsiveness}")
+                                
+                                privilege = classification_result.get('privilege', 'N/A')
+                                if 'privileged' in privilege.lower() and 'not privileged' not in privilege.lower():
+                                    st.warning(f"**Privilege:** {privilege}")
+                                else:
+                                    st.info(f"**Privilege:** {privilege}")
+                            
+                            with col2:
+                                st.info(f"**Document Type:** {classification_result.get('document_type', 'N/A')}")
+                                st.info(f"**Business Relevance:** {classification_result.get('business_relevance', 'N/A')}")
+                                
+                            with col3:
+                                confidentiality = classification_result.get('confidentiality', 'N/A')
+                                if 'confidential' in confidentiality.lower():
+                                    st.warning(f"**Confidentiality:** {confidentiality}")
+                                else:
+                                    st.info(f"**Confidentiality:** {confidentiality}")
+                                
+                                pii = classification_result.get('contains_pii', 'N/A')
+                                if pii.lower() == 'yes':
+                                    st.error(f"**Contains PII:** {pii}")
+                                else:
+                                    st.info(f"**Contains PII:** {pii}")
+                            
+                            # Topic Analysis - Direct from API response
+                            if "topic_analysis" in classification_result:
+                                st.markdown("#### 📋 Topic Analysis")
+                                topic_data = classification_result["topic_analysis"]
+                                col1, col2 = st.columns(2)
+                                
+                                with col1:
+                                    st.info(f"**Primary Topic:** {topic_data.get('primary_topic', 'N/A')}")
+                                    st.info(f"**Subject Matter:** {topic_data.get('subject_matter', 'N/A')}")
+                                with col2:
+                                    if topic_data.get('secondary_topics'):
+                                        st.info(f"**Secondary Topics:** {', '.join(topic_data['secondary_topics'])}")
+                                    if topic_data.get('key_concepts'):
+                                        st.info(f"**Key Concepts:** {', '.join(topic_data['key_concepts'])}")
+                            
+                            # Reasoning - Direct from API response
+                            if "reasoning" in classification_result:
+                                st.markdown("#### 💭 Analysis & Reasoning")
+                                reasoning_data = classification_result["reasoning"]
+                                
+                                if isinstance(reasoning_data, dict):
+                                    with st.expander("📝 Detailed Reasoning", expanded=True):
+                                        if reasoning_data.get('responsiveness_reasoning'):
+                                            st.markdown(f"**Responsiveness:** {reasoning_data['responsiveness_reasoning']}")
+                                        if reasoning_data.get('privilege_reasoning'):
+                                            st.markdown(f"**Privilege:** {reasoning_data['privilege_reasoning']}")
+                                        if reasoning_data.get('context_analysis'):
+                                            st.markdown(f"**Context Analysis:** {reasoning_data['context_analysis']}")
+                                        if reasoning_data.get('sensitivity_notes'):
+                                            st.markdown(f"**Sensitivity Notes:** {reasoning_data['sensitivity_notes']}")
+                                        if reasoning_data.get('redaction_recommendations'):
+                                            st.markdown(f"**Redaction Recommendations:** {reasoning_data['redaction_recommendations']}")
+                                else:
+                                    st.info(f"**Reasoning:** {str(reasoning_data)}")
+                        
+                        else:
+                            # FALLBACK: Try to parse from raw_response (old format)
+                            st.markdown("#### 📋 Parsing from Raw Response")
+                            try:
+                                import json
+                                import re
+                                
+                                # Extract JSON from response
+                                if isinstance(classification_result, dict) and "raw_response" in classification_result:
+                                    raw_text = classification_result["raw_response"]
+                                    json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+                                    if json_match:
+                                        parsed_data = json.loads(json_match.group())
+                                        st.json(parsed_data)
+                                    else:
+                                        st.info("Could not parse JSON from raw response")
+                                        st.text(raw_text[:500] + "..." if len(raw_text) > 500 else raw_text)
+                                else:
+                                    st.info("No raw response available for parsing")
+                                    st.json(classification_result)
+                            except Exception as e:
+                                st.warning(f"Could not parse enhanced results: {e}")
+                                st.json(classification_result)
+                    
+                    else:
+                        # Handle other classification types (Standard, BART-only)
+                        st.markdown("#### 📊 Standard Classification Results")
+                        if isinstance(classification_result, dict):
+                            # Main classification info
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                if "classification" in classification_result:
+                                    st.success(f"**Classification:** {classification_result['classification']}")
+                                elif "simple_classification" in classification_result:
+                                    st.success(f"**Classification:** {classification_result['simple_classification']}")
+                                else:
+                                    st.info("**Classification:** Not available")
+                            
+                            with col2:
+                                if "confidence" in classification_result:
+                                    st.info(f"**Confidence:** {classification_result['confidence']}")
+                                if "method" in classification_result:
+                                    st.info(f"**Method:** {classification_result['method']}")
+                            
+                            with col3:
+                                # Check for any enhanced fields that might be present
+                                enhanced_count = sum(1 for field in ['responsiveness', 'privilege', 'confidentiality'] 
+                                                   if field in classification_result)
+                                if enhanced_count > 0:
+                                    st.info(f"**Enhanced Fields:** {enhanced_count}")
+                            
+                            # Show basic enhanced fields if present
+                            if any(field in classification_result for field in ['responsiveness', 'privilege', 'confidentiality']):
+                                st.markdown("#### ⚖️ eDiscovery Fields")
+                                if "responsiveness" in classification_result:
+                                    st.info(f"**Responsiveness:** {classification_result['responsiveness']}")
+                                if "privilege" in classification_result:
+                                    st.info(f"**Privilege:** {classification_result['privilege']}")
+                                if "confidentiality" in classification_result:
+                                    st.info(f"**Confidentiality:** {classification_result['confidentiality']}")
+                            
+                            # Reasoning
+                            if "reasoning" in classification_result:
+                                with st.expander("💭 Reasoning"):
+                                    st.markdown(f"{classification_result['reasoning']}")
+                        
+                        elif isinstance(classification_result, str):
+                            st.success(f"**Classification:** {classification_result}")
+                        else:
+                            st.success(f"**Classification:** {str(classification_result)}")
+                    
+                    # Full results in expandable section
+                    with st.expander("🔍 Full Classification Details"):
+                        st.json(classification_result)
+                
+                else:
+                    st.error(f"❌ Classification failed: {result.get('error', 'Unknown error')}")
+        else:
+            st.warning("⚠️ Please enter text to classify")
 
 def summarization_tab():
     """Enhanced summarization functionality tab with clear input explanations"""
